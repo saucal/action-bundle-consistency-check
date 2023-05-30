@@ -93,7 +93,7 @@ runs:
         commit-branch: ${{ github.ref_name }}
         commit-author: ${{ github.triggering_actor }}
         force: true
-        final-status: "${{ job.status }}"
+        final-status: "${{ steps.pre-build-consistency-check.outcome }}"
         data-file: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         commit-message: |
           Consistency check failed @here
