@@ -1,10 +1,6 @@
 name: "Consistency check"
 description: "Check if the target built branch and remote filesystem are in sync."
 inputs:
-  source:
-    description: "Source directory"
-    required: false
-    default: 'source'
   built:
     description: "Previous build directory (needs to be repo and have a remote)"
     required: false
@@ -45,16 +41,6 @@ inputs:
     description: "Extra options for the RSync command"
     required: false
     default: ''
-  force-ignore:
-    description: "Force ignore files"
-    required: false
-    default: |
-      /auth.json
-      /vendor/*
-      !/vendor/composer
-      /vendor/composer/*
-      !/vendor/composer/installers
-      !/vendor/composer/installed.json
   ssh-ignore:
     description: "Force ignore files"
     required: false
