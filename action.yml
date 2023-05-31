@@ -1,0 +1,99 @@
+name: "Consistency check"
+description: "Check if the target built branch and remote filesystem are in sync."
+inputs:
+  built:
+    description: "Previous build directory (needs to be repo and have a remote)"
+    required: false
+    default: 'built'
+  env-host:
+    description: "Env Host"
+    required: true
+    default: ''
+  env-port:
+    description: "Env Port"
+    required: true
+    default: '22'
+  env-user:
+    description: "Env User"
+    required: true
+    default: ''
+  env-key:
+    description: "Env SSH Key"
+    required: false
+    default: ''
+  env-pass:
+    description: "Env Password"
+    required: false
+    default: ''
+  env-remote-root:
+    description: "Env Remote Root"
+    required: true
+    default: ''
+  ssh-flags:
+    description: "SSH Flags to pass to the RSync command"
+    required: false
+    default: ''
+  ssh-shell-params:
+    description: "Parameters to be passed to the SSH shell command"
+    required: false
+    default: ''
+  ssh-extra-options:
+    description: "Extra options for the RSync command"
+    required: false
+    default: ''
+  ssh-ignore:
+    description: "Force ignore files"
+    required: false
+    default: |
+      .git
+      wp-debug.log
+      uploads/
+      /vendor/**
+      /auth.json
+      /composer.json
+      /composer.lock
+      /object-cache.php
+      /db.php
+  slack-token:
+    description: "Slack Token"
+    required: false
+    default: ''
+  slack-channel:
+    description: "Channel ID to publish the message on"
+    required: false
+    default: ''
+
+runs:
+  using: "composite"
+  steps:
+    - name: Pre-build Consistency check
+      id: pre-build-consistency-check
+      uses: saucal/action-deploy-ssh@v1
+      with:
+        env-host: ${{ inputs.env-host }}
+        env-port: ${{ inputs.env-port }}
+        env-user: ${{ inputs.env-user }}
+        env-key: ${{ inputs.env-key }}
+        env-pass: ${{ inputs.env-pass }}
+        env-local-root: ${{ inputs.built }}
+        env-remote-root: ${{ inputs.env-remote-root }}
+        force-ignore: ${{ inputs.ssh-ignore }}
+        ssh-flags: ${{ inputs.ssh-flags }}
+        ssh-shell-params: ${{ inputs.ssh-shell-params }}
+        ssh-extra-options: ${{ inputs.ssh-extra-options }}
+        consistency-check: true
+
+    - name: Signal Failure to slack
+      if: ${{ failure() }}
+      uses: saucal/action-slack-notification@feature/file-upload
+      with:
+        token: ${{ inputs.slack-token }}
+        channel: ${{ inputs.slack-channel }}
+        commit-repo: ${{ github.repository }}
+        commit-branch: ${{ github.ref_name }}
+        commit-author: ${{ github.triggering_actor }}
+        force: true
+        final-status: "${{ steps.pre-build-consistency-check.outcome }}"
+        data-file: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
+        commit-message: |
+          Consistency check failed @here
