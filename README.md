@@ -31,14 +31,27 @@ jobs:
         with:
           git-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Consistency Check
+      - name: Consistency Check (main <-> production)
+        if:  ${{ github.ref_name == 'main' }}
         uses: saucal/action-bundle-consistency-check@v1
         with:
-          env-host: ${{ secrets.ENV_HOST }}
-          env-user: ${{ secrets.ENV_USER }}
-          env-pass: ${{ secrets.ENV_PASS }}
-          env-port: ${{ secrets.ENV_PORT }}
-          env-remote-root: ${{ secrets.ENV_REMOTE_ROOT }}
+          env-host: ${{ secrets.ENV_PRODUCTION_HOST }}
+          env-user: ${{ secrets.ENV_PRODUCTION_USER }}
+          env-pass: ${{ secrets.ENV_PRODUCTION_PASS }}
+          env-port: ${{ secrets.ENV_PRODUCTION_PORT }}
+          env-remote-root: ${{ secrets.ENV_PRODUCTION_REMOTE_ROOT }}
+          slack-token: ${{ secrets.SLACK_CI_BOT_TOKEN }}
+          slack-channel: "..." # The channel's ID
+
+      - name: Consistency Check (develop <-> staging)
+        if:  ${{ github.ref_name == 'develop' }}
+        uses: saucal/action-bundle-consistency-check@v1
+        with:
+          env-host: ${{ secrets.ENV_STAGING_HOST }}
+          env-user: ${{ secrets.ENV_STAGING_USER }}
+          env-pass: ${{ secrets.ENV_STAGING_PASS }}
+          env-port: ${{ secrets.ENV_STAGING_PORT }}
+          env-remote-root: ${{ secrets.ENV_STAGING_REMOTE_ROOT }}
           slack-token: ${{ secrets.SLACK_CI_BOT_TOKEN }}
           slack-channel: "..." # The channel's ID
 ```
