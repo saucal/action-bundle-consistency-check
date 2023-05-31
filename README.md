@@ -1,51 +1,46 @@
-# BUNDLE: Push to SSH
+# BUNDLE: Consistency check
 
-This action is a bundle of other actions which simplifies the workflow definition process for our standard wp-content rooted projects.
+This action is a clone of the [Push to SSH bundle](https://github.com/saucal/action-bundle-push-to-ssh) meant to run a pre-build consistency check.
 
-This action performs consistency checks before deploying anything. 
-There are 2 types of consistency checks: 
+It is checking if the built branch of the target built repo is consistent with the target system (remote). It is very fast (as it does not build anything) and is designed to be run in a scheduled workflow or manually. 
 
-1. Pre-build consistency check
-2. Post-build consistency check
+The contents of the branch that trigger the action (if run manually) do not play a role for the action's outcome.
 
-The pre-build consistency check runs when `dry-run` is `true`, and what it does is checking if the built branch of the target built repo is consistent with the target system (remote). It is very fast (as it does not build) and is designed to be run in a scheduled workflow. 
+If the slack token and channel are configured, it will post a message on slack **only on failure**.
 
-The post-build consistency check runs before an actual deployment is attempted, so `dry-run` is not explicitly set and also `disable-consistency-check` is not set. This check will compare the GIT manifest, so the files that GIT sees that have changed between the last commit in the built repo to the output of an `rsync --dry-run`. If these 2 do not match, then rsync wants to deploy a different set of files than what GIT knows that changed, and the action will fail. 
 
 ## Getting Started
 
 This is the most common configuration
 
 ```yml
-name: Deploy to [PRODUCTION|STAGING] via SSH
+name: Filesystem Consistency check
 on:
-  push:
-    branches:
-      - ...
   workflow_dispatch:
-    inputs:
-      disable-consistency-check:
-        type: boolean
-        description: Disable consistency check
+  schedule:
+    - cron:  '20 5,17 * * *' # Run at 5:20 & 17:20 every day.
 
 jobs:
   build:
-    name: Build
+    name: Check consistency
     runs-on: ubuntu-latest
     concurrency: deployment-${{ github.ref_name }}
     steps:
-      ...
-      ...
-      ...
-      - name: Push to SSH
-        uses: saucal/action-bundle-push-to-ssh@v1
+      - name: Prepare
+        uses: saucal/action-bundle-prepare@v1
+        with:
+          git-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Consistency Check
+        uses: saucal/action-bundle-consistency-check@v1
         with:
           env-host: ${{ secrets.ENV_HOST }}
-          env-port: ${{ secrets.ENV_PORT }}
           env-user: ${{ secrets.ENV_USER }}
           env-pass: ${{ secrets.ENV_PASS }}
+          env-port: ${{ secrets.ENV_PORT }}
           env-remote-root: ${{ secrets.ENV_REMOTE_ROOT }}
-          disable-consistency-check: ${{ github.event.inputs.disable-consistency-check }}
+          slack-token: ${{ secrets.SLACK_CI_BOT_TOKEN }}
+          slack-channel: "..." # The channel's ID
 ```
 
 ## Full options
@@ -53,9 +48,6 @@ jobs:
 ```yml
 - uses: saucal/action-bundle-push-to-ssh@v1
   with:
-    # Folder where source code is already built
-    source: "source"
-
     # Folder of the repo that things will be pushed to
     built: "built"
 
@@ -77,14 +69,14 @@ jobs:
     # SSH Root to push to
     env-remote-root: ""
 
-    # Forced .gitignore entries (appended at the end)
-    force-ignore: |
-      /auth.json
-      /vendor/*
-      !/vendor/composer
-      /vendor/composer/*
-      !/vendor/composer/installers
-      !/vendor/composer/installed.json
+    # SSH Flags to pass to the RSync command
+    ssh-flags: "avrcz"
+
+    # Parameters to be passed to the SSH shell command
+    ssh-shell-params: ""
+
+    # Extra options for the RSync command
+    ssh-extra-options: "delete no-inc-recursive size-only ignore-times omit-dir-times no-perms no-owner no-group no-dirs"
 
     # Ignore rules. Each line will generate an extra --exclude=... parameter for rsync.
     ssh-ignore: |
@@ -98,6 +90,9 @@ jobs:
       /object-cache.php
       /db.php
 
-    # Wether to not do a consistency check and complete the workflow regardless. [true|false]
-    disable-consistency-check: ""
+    # Slack token to use when posting to Slack
+    slack-token: ""
+
+    # Slack channel to post to use when posting to Slack
+    slack-channel: ""
 ```
