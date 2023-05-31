@@ -85,7 +85,7 @@ runs:
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
-      uses: saucal/action-slack-notification@feature/file-upload
+      uses: saucal/action-slack-notification@v1
       with:
         token: ${{ inputs.slack-token }}
         channel: ${{ inputs.slack-channel }}
