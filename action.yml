@@ -63,6 +63,14 @@ inputs:
     description: "Channel ID to publish the message on"
     required: false
     default: ''
+  run-ssh-pre:
+    description: "Determine if we are going to run the pre script"
+    required: false
+    default: 'true'
+  run-ssh-post:
+    description: "Determine if we are going to run the post script"
+    required: false
+    default: 'true'    
 
 runs:
   using: "composite"
@@ -83,6 +91,8 @@ runs:
         ssh-shell-params: ${{ inputs.ssh-shell-params }}
         ssh-extra-options: ${{ inputs.ssh-extra-options }}
         consistency-check: true
+        run-pre: ${{ inputs.run-ssh-pre }}
+        run-post: ${{ inputs.run-ssh-post }}
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
