@@ -18,11 +18,11 @@ name: Filesystem Consistency check
 on:
   workflow_dispatch:
   schedule:
-    - cron:  '20 5,17 * * *' # Run at 5:20 & 17:20 every day.
+    - cron:  '0 0,12 * * *' # Run at 0:00 & 12:00 (UTC) every day.
 
 jobs:
   build:
-    name: Check consistency
+    name: Check consistency on ${{ github.ref_name }}
     runs-on: ubuntu-latest
     concurrency: deployment-${{ github.ref_name }}
     steps:
