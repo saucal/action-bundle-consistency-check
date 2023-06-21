@@ -103,6 +103,8 @@ runs:
         commit-repo: ${{ github.repository }}
         commit-branch: ${{ github.ref_name }}
         commit-author: ${{ github.triggering_actor }}
+        heading: ${{ github.workflow }}
+        action-url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         force: true
         final-status: "${{ steps.pre-build-consistency-check.outcome }}"
         data-file: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
