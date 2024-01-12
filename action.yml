@@ -93,6 +93,7 @@ runs:
         consistency-check: true
         run-pre: ${{ inputs.run-ssh-pre }}
         run-post: ${{ inputs.run-ssh-post }}
+        action-pre-push: ${{ runner.temp }}/handle-wp-core-update.sh
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
