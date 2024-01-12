@@ -77,7 +77,7 @@ runs:
   steps:
     - name: Pre-build Consistency check
       id: pre-build-consistency-check
-      uses: saucal/action-deploy-ssh@v2
+      uses: saucal/action-deploy-ssh@v3
       with:
         env-host: ${{ inputs.env-host }}
         env-port: ${{ inputs.env-port }}
