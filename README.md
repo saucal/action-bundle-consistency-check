@@ -108,4 +108,10 @@ jobs:
 
     # Slack channel to post to use when posting to Slack
     slack-channel: ""
+
+    # Whether or not the pre script will be executed.
+    run-ssh-pre: true
+
+    # Whether or not the post script will be executed.
+    run-ssh-post: true
 ```
