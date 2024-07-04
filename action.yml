@@ -45,6 +45,10 @@ inputs:
     description: "Force ignore files"
     required: false
     default: 'false'
+  ssh-ignore-extra:
+    description: "Extra force ignore files over SSH. Useful to extend the default configuration."
+    required: false
+    default: 'false'
   slack-token:
     description: "Slack Token"
     required: false
@@ -77,6 +81,7 @@ runs:
         env-local-root: ${{ inputs.built }}
         env-remote-root: ${{ inputs.env-remote-root }}
         force-ignore: ${{ inputs.ssh-ignore }}
+        force-ignore-extra: ${{ inputs.ssh-ignore-extra }}
         ssh-flags: ${{ inputs.ssh-flags }}
         ssh-shell-params: ${{ inputs.ssh-shell-params }}
         ssh-extra-options: ${{ inputs.ssh-extra-options }}
