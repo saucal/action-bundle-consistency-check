@@ -91,17 +91,17 @@ runs:
 
     - name: Upload details about SSH consistency
       uses: actions/upload-artifact@v4
-      if: ${{ always() && steps.deploy-to-ssh.outputs.bufferPath }}
+      if: ${{ always() && steps.pre-build-consistency-check.outputs.bufferPath }}
       with:
         name: consistency-check-file
-        path: ${{ steps.deploy-to-ssh.outputs.bufferPath }}
+        path: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         
     - name: Upload diff about SSH consistency
       uses: actions/upload-artifact@v4
-      if: ${{ always() && steps.deploy-to-ssh.outputs.diffPath }}
+      if: ${{ always() && steps.pre-build-consistency-check.outputs.diffPath }}
       with:
         name: consistency-diff-file
-        path: ${{ steps.deploy-to-ssh.outputs.diffPath }}
+        path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
