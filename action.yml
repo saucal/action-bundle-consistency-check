@@ -89,6 +89,20 @@ runs:
         run-pre: ${{ inputs.run-ssh-pre }}
         run-post: ${{ inputs.run-ssh-post }}
 
+    - name: Upload details about SSH consistency
+      uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.deploy-to-ssh.outputs.bufferPath }}
+      with:
+        name: consistency-check-file
+        path: ${{ steps.deploy-to-ssh.outputs.bufferPath }}
+        
+    - name: Upload diff about SSH consistency
+      uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.deploy-to-ssh.outputs.diffPath }}
+      with:
+        name: consistency-diff-file
+        path: ${{ steps.deploy-to-ssh.outputs.diffPath }}
+
     - name: Signal Failure to slack
       if: ${{ failure() }}
       uses: saucal/action-slack-notification@v1
