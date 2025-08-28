@@ -25,6 +25,10 @@ inputs:
     description: "Env Password"
     required: false
     default: ''
+  env-local-root:
+    description: "Env Local Root (relative to the built directory)"
+    required: false
+    default: ''
   env-remote-root:
     description: "Env Remote Root"
     required: true
@@ -78,7 +82,7 @@ runs:
         env-user: ${{ inputs.env-user }}
         env-key: ${{ inputs.env-key }}
         env-pass: ${{ inputs.env-pass }}
-        env-local-root: ${{ inputs.built }}
+        env-local-root: ${{ inputs.built }}/${{ inputs.env-local-root }}
         env-remote-root: ${{ inputs.env-remote-root }}
         force-ignore: ${{ inputs.ssh-ignore }}
         force-ignore-extra: ${{ inputs.ssh-ignore-extra }}
