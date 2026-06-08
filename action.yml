@@ -93,18 +93,29 @@ runs:
         run-pre: ${{ inputs.run-ssh-pre }}
         run-post: ${{ inputs.run-ssh-post }}
 
-    - name: Upload details about SSH consistency
+    - name: Compute artifact name prefix
+      id: artifact-meta
+      shell: bash
+      env:
+        FULL_REPO: ${{ github.repository }}
+      run: echo "prefix=${FULL_REPO##*/}-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+    - name: Upload rsync sync plan
       uses: actions/upload-artifact@v4
       if: ${{ always() && steps.pre-build-consistency-check.outputs.bufferPath }}
       with:
-        name: consistency-check-file
-        path: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
-        
-    - name: Upload diff about SSH consistency
+        name: ${{ steps.artifact-meta.outputs.prefix }}-deploy-rsync-plan
+        if-no-files-found: ignore
+        path: |
+          ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
+          ${{ steps.pre-build-consistency-check.outputs.gitManifestPath }}
+          ${{ steps.pre-build-consistency-check.outputs.manifestDiffPath }}
+
+    - name: Upload consistency diffs
       uses: actions/upload-artifact@v4
       if: ${{ always() && steps.pre-build-consistency-check.outputs.diffPath }}
       with:
-        name: consistency-diff-file
+        name: ${{ steps.artifact-meta.outputs.prefix }}-consistency-diffs
         path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
 
     - name: Signal Failure to slack
