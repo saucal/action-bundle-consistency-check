@@ -95,6 +95,7 @@ runs:
 
     - name: Compute artifact name prefix
       id: artifact-meta
+      if: ${{ always() }}
       shell: bash
       env:
         FULL_REPO: ${{ github.repository }}
