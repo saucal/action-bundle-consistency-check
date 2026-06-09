@@ -1,0 +1,5 @@
+##################################################################
+# RSYNC SYNC PLAN — rsync's ACTUAL transfer decision (build -> target)
+##################################################################
+
+deleting wp-content/cron-debug.log.tick
