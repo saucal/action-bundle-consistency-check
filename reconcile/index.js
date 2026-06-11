@@ -26,7 +26,7 @@ async function sh(cmd, args, opts = {}) {
   const ref = env('REF');
   const repo = env('REPO');
   const sourceDir = env('SOURCE_DIR', 'source');
-  const treeRoot = path.join(env('BUILT_DIR', 'built'));
+  const treeRoot = env('BUILT_DIR', 'built');
   const manifestPath = env('MANIFEST_PATH');
   const runUrl = env('RUN_URL');
   const satispressUrl = env('SATISPRESS_URL');
@@ -37,6 +37,9 @@ async function sh(cmd, args, opts = {}) {
     core.warning('No drift manifest available; nothing to reconcile.');
     return;
   }
+
+  if (!ref) { core.setFailed('REF is required.'); return; }
+  if (!repo) { core.setFailed('REPO is required.'); return; }
 
   // 1. Parse + classify.
   const items = parseManifest(fs.readFileSync(manifestPath, 'utf8'));
@@ -49,7 +52,11 @@ async function sh(cmd, args, opts = {}) {
 
   // 2. Apply composer changes for recoverable, composer-backed items.
   const hasComposer = fs.existsSync(composerPath);
-  let composer = hasComposer ? JSON.parse(fs.readFileSync(composerPath, 'utf8')) : null;
+  let composer = null;
+  if (hasComposer) {
+    try { composer = JSON.parse(fs.readFileSync(composerPath, 'utf8')); }
+    catch (e) { throw new Error(`Failed to parse ${composerPath}: ${e.message}`); }
+  }
   let composerChanged = false;
   const coreBumps = [];
 
@@ -88,12 +95,16 @@ async function sh(cmd, args, opts = {}) {
   const cwd = sourceDir;
   await sh('git', ['config', 'user.name', 'saucal-ci'], { cwd });
   await sh('git', ['config', 'user.email', 'ci@saucal.com'], { cwd });
-  await sh('git', ['fetch', 'origin', ref], { cwd });
-  await sh('git', ['checkout', '-B', branch, `origin/${ref}`], { cwd });
+  const fetched = await sh('git', ['fetch', 'origin', ref], { cwd });
+  if (fetched.code !== 0) { core.setFailed(`git fetch failed:\n${fetched.out}`); return; }
+  const checkedOut = await sh('git', ['checkout', '-B', branch, `origin/${ref}`], { cwd });
+  if (checkedOut.code !== 0) { core.setFailed(`git checkout failed:\n${checkedOut.out}`); return; }
 
   // Re-apply composer edit on top of fresh {ref} (checkout -B discarded the working-tree edit).
   if (composerChanged) {
-    const fresh = JSON.parse(fs.readFileSync(path.join(cwd, 'composer.json'), 'utf8'));
+    let fresh;
+    try { fresh = JSON.parse(fs.readFileSync(path.join(cwd, 'composer.json'), 'utf8')); }
+    catch (e) { throw new Error(`Failed to parse ${path.join(cwd, 'composer.json')}: ${e.message}`); }
     let merged = fresh;
     for (const c of classified) {
       if (c.recoverable && c.composerPackage) {
@@ -112,7 +123,8 @@ async function sh(cmd, args, opts = {}) {
     return;
   }
 
-  await sh('git', ['commit', '-m', `chore: reconcile server drift on ${ref}`], { cwd });
+  const committed = await sh('git', ['commit', '-m', `chore: reconcile server drift on ${ref}`], { cwd });
+  if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
   const push = await sh('git', ['push', '--force', 'origin', branch], { cwd });
   if (push.code !== 0) { core.setFailed(`git push failed:\n${push.out}`); return; }
 
@@ -122,7 +134,8 @@ async function sh(cmd, args, opts = {}) {
   const title = `Reconcile server drift on ${ref}`;
   const existing = await sh('gh', ['pr', 'list', '-R', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
   if (existing.out.trim()) {
-    await sh('gh', ['pr', 'edit', existing.out.trim(), '-R', repo, '--title', title, '--body-file', bodyFile]);
+    const edited = await sh('gh', ['pr', 'edit', existing.out.trim(), '-R', repo, '--title', title, '--body-file', bodyFile]);
+    if (edited.code !== 0) { core.setFailed(`gh pr edit failed:\n${edited.out}`); return; }
     core.info(`Updated PR #${existing.out.trim()}.`);
   } else {
     const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', branch, '--base', ref, '--title', title, '--body-file', bodyFile]);
