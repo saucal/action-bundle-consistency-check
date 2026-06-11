@@ -68,7 +68,27 @@ inputs:
   run-ssh-post:
     description: "Determine if we are going to run the post script"
     required: false
-    default: 'true'    
+    default: 'true'
+  reconcile:
+    description: "Set to '1' to attempt drift reconciliation (open a reconciliation-{ref} PR). Empty/0 disables."
+    required: false
+    default: ''
+  source:
+    description: "Source tree directory (where composer.json lives). Matches bundle-prepare's source input."
+    required: false
+    default: 'source'
+  github-token:
+    description: "Token with contents+pull-requests write on the source repo, used to push the branch and open the PR."
+    required: false
+    default: ''
+  satispress-url:
+    description: "SatisPress composer repo base URL, used to resolve premium plugins."
+    required: false
+    default: 'https://packages.saucal.com'
+  reconcile-adopt-non-composer:
+    description: "Allow copying non-composer plugin/theme files into source (off by default)."
+    required: false
+    default: 'false'
 
 runs:
   using: "composite"
@@ -118,6 +138,22 @@ runs:
       with:
         name: ${{ steps.artifact-meta.outputs.prefix }}-consistency-diffs
         path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
+
+    - name: Reconcile drift
+      if: ${{ failure() && inputs.reconcile == '1' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        REF: ${{ github.ref_name }}
+        SOURCE_DIR: ${{ inputs.source }}
+        BUILT_DIR: ${{ inputs.built }}
+        SATISPRESS_URL: ${{ inputs.satispress-url }}
+        ADOPT_NON_COMPOSER: ${{ inputs.reconcile-adopt-non-composer }}
+        MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
+        DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
+        RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
