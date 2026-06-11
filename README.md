@@ -115,3 +115,54 @@ jobs:
     # Whether or not the post script will be executed.
     run-ssh-post: true
 ```
+
+## Reconciliation (opt-in)
+
+When the consistency check **fails** (the server filesystem has drifted from the deployed build), an optional reconcile step can attempt to capture recoverable drift back into source and open a pull request — so the repo catches up to what is actually running, rather than requiring a manual forced redeploy.
+
+### Enabling reconciliation
+
+Set the repository configuration variable `SAUCAL_CONSISTENCY_RECONCILE` to `1`. If the variable is absent or any value other than `1`, reconciliation is disabled (the current default). The reusable workflow (`saucal/action-maintenance/.github/workflows/consistency-check.yml`) reads the variable and passes it to this action as the `reconcile` input.
+
+```bash
+gh variable set SAUCAL_CONSISTENCY_RECONCILE -R saucal/<repo> -b 1
+```
+
+### What it does
+
+Each drifted path is classified. Recoverable cases are applied to the source tree and committed:
+
+- **Missing plugin/theme on wpackagist** — package found on [wpackagist.org](https://wpackagist.org): added to `composer.json` as `wpackagist-plugin/<slug>` or `wpackagist-theme/<slug>` at the detected version.
+- **Premium plugin/theme on SatisPress** — package found on `packages.saucal.com`: added as the corresponding `saucal/<slug>` package.
+- **Version drift** — server version differs from the composer-pinned one: version constraint bumped to match.
+- **WordPress core drift** — flagged for a core bump (handled via `prepare-composer`; not auto-applied yet).
+
+### What it flags in the PR (not auto-fixed)
+
+- **Premium plugins not on wpackagist or SatisPress** → marked "needs review" (add to SatisPress or vendor manually).
+- **Sensitive files** (credentials, `.env`, etc.) → never auto-committed.
+- **Hand-edited compiled assets** (`*.min.js`, `/build/`, `/dist/`) → unrecoverable; flagged.
+- **Runtime/junk files** (logs, debug JSON, etc.) → recommends adding them to `SSH_IGNORE_LIST` / `SSH_IGNORE_LIST_EXTRA`.
+- **Files present in the build but missing on the server** → flagged as "needs redeploy".
+
+### The PR
+
+A branch named `reconciliation-{ref}` (e.g. `reconciliation-main`, `reconciliation-develop`) is recreated from the latest `{ref}` on every run and a PR targeting the checked branch is opened or updated in place — idempotent, no duplicates. The full drift report lives in the PR body only; nothing extra is committed. The PR's normal build CI acts as the retest.
+
+### Check status
+
+The consistency check remains **red** whenever real drift exists — including when a reconciliation PR is open — so existing Slack and status-check alerting still fires. If the only drift is purely ignorable files (junk/logs), no PR is opened and the report is written to the job summary instead.
+
+### New inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `reconcile` | `false` | Set to `true` to enable reconciliation. |
+| `source` | `source` | Folder of the source repo to apply changes to. |
+| `github-token` | — | Token used to open/update the reconciliation PR. |
+| `satispress-url` | `https://packages.saucal.com` | SatisPress registry URL for premium package lookups. |
+| `reconcile-adopt-non-composer` | `false` | Also adopt files not managed by Composer. |
+
+### Phase 2 (planned)
+
+Once the feature is proven in production, the opt-in gate will flip: reconciliation will be **enabled by default** and disabled only when `SAUCAL_CONSISTENCY_RECONCILE` is set to `0` (opt-out).
