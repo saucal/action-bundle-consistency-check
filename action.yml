@@ -85,6 +85,10 @@ inputs:
     description: "SatisPress composer repo base URL, used to resolve premium plugins."
     required: false
     default: 'https://packages.saucal.com'
+  satispress-token:
+    description: "SatisPress HTTP Basic auth token (license key) used to resolve premium plugins."
+    required: false
+    default: ''
   reconcile-adopt-non-composer:
     description: "Allow copying non-composer plugin/theme files into source (off by default)."
     required: false
@@ -149,6 +153,7 @@ runs:
         SOURCE_DIR: ${{ inputs.source }}
         BUILT_DIR: ${{ inputs.built }}
         SATISPRESS_URL: ${{ inputs.satispress-url }}
+        SATISPRESS_TOKEN: ${{ inputs.satispress-token }}
         ADOPT_NON_COMPOSER: ${{ inputs.reconcile-adopt-non-composer }}
         MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}

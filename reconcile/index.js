@@ -30,6 +30,7 @@ async function sh(cmd, args, opts = {}) {
   const manifestPath = env('MANIFEST_PATH');
   const runUrl = env('RUN_URL');
   const satispressUrl = env('SATISPRESS_URL');
+  const satispressToken = env('SATISPRESS_TOKEN');
   const branch = `reconciliation-${ref}`;
   const composerPath = path.join(sourceDir, 'composer.json');
 
@@ -43,12 +44,16 @@ async function sh(cmd, args, opts = {}) {
 
   // 1. Parse + classify.
   const items = parseManifest(fs.readFileSync(manifestPath, 'utf8'));
-  const resolvers = makeResolvers(fetch, satispressUrl);
+  const resolvers = makeResolvers(fetch, satispressUrl, satispressToken);
   const classified = await classify(items, { resolvers, treeRoot });
   const outcome = decideOutcome(classified);
   core.info(`Reconcile outcome: ${outcome} (${classified.length} classified items)`);
 
-  if (outcome === 'noop') { core.warning('No actionable drift classified.'); return; }
+  if (outcome === 'noop') {
+    await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
+    core.warning('No actionable drift classified.');
+    return;
+  }
 
   // 2. Apply composer changes for recoverable, composer-backed items.
   const hasComposer = fs.existsSync(composerPath);
