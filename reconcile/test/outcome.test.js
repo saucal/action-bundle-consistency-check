@@ -22,3 +22,7 @@ test('ignorable-only', () => {
 test('noop when empty', () => {
   assert.strictEqual(decideOutcome([]), 'noop');
 });
+
+test('patched-candidate counts as recoverable -> reconciled', () => {
+  assert.strictEqual(decideOutcome([{ recoverable: true, category: 'patched-candidate' }]), 'reconciled');
+});

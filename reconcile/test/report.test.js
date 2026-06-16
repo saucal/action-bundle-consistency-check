@@ -28,3 +28,26 @@ test('omits empty sections', () => {
   assert.match(body, /Outcome:\*\* ignorable-only/);
   assert.doesNotMatch(body, /### ✅ Applied/);
 });
+
+test('patched-candidate renders under Patched (not Applied) and verify status shows in header', () => {
+  const items = [
+    { key: 'code-snippets', category: 'patched-candidate', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'modified from published; bump-first then patch' },
+    { key: 'newplug', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/newplug', remediation: 'add' },
+  ];
+  const body = reportBody(items, { ref: 'main', runUrl: 'u', verify: 'verified' });
+  assert.match(body, /\*\*Outcome:\*\* reconciled \(verified\)/);
+  assert.match(body, /### 🩹 Patched/);
+  assert.match(body, /### ✅ Applied/);
+  const appliedIdx = body.indexOf('✅ Applied');
+  const patchedIdx = body.indexOf('🩹 Patched');
+  assert.ok(appliedIdx !== -1 && patchedIdx !== -1 && appliedIdx < patchedIdx, 'Applied section before Patched');
+  // the patched item must NOT appear in the Applied section block
+  const appliedBlock = body.slice(appliedIdx, patchedIdx);
+  assert.doesNotMatch(appliedBlock, /code-snippets/);
+  assert.match(body, /code-snippets/); // present somewhere (the Patched section)
+});
+
+test('no verify status -> header has no suffix (backward compatible)', () => {
+  const body = reportBody([{ key: 'x', category: 'ignorable', recoverable: false, remediation: 'junk' }], { ref: 'develop', runUrl: 'u' });
+  assert.match(body, /\*\*Outcome:\*\* ignorable-only$/m);
+});
