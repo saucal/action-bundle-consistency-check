@@ -99,3 +99,10 @@ test('modifiedPaths defaults to empty when omitted (backward compatible)', async
   const out = await classify([{ path: 'plugins/churn-solution/churn.php', side: 'remote-only' }], { resolvers, treeRoot: '/nonexistent' });
   assert.strictEqual(findKey(out, 'churn-solution').category, 'satispress'); // unchanged
 });
+
+test('resolvable component verdict carries root and kind', async () => {
+  const out = await classify([{ path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' }], { resolvers, treeRoot: '/nonexistent' });
+  const c = out.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.root, 'plugins/code-snippets');
+  assert.strictEqual(c.kind, 'plugin');
+});
