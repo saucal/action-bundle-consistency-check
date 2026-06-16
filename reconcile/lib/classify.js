@@ -59,7 +59,7 @@ function looseVerdict(it) {
 }
 
 async function componentVerdict(comp, ctx) {
-  const { resolvers, treeRoot } = ctx;
+  const { resolvers, treeRoot, modifiedPaths = new Set() } = ctx;
   const label = `${comp.kind} ${comp.slug}`;
 
   if (comp.paths.some((it) => isSensitive(it.path))) {
@@ -78,6 +78,12 @@ async function componentVerdict(comp, ctx) {
   const res = (await resolvers.wpackagist(comp.kind, comp.slug)) || (await resolvers.satispress(comp.slug));
   if (res) {
     const pin = treeVersion || res.version;
+    const isModified = comp.paths.some((it) => modifiedPaths.has(it.path));
+    if (isModified) {
+      return { key: comp.slug, category: 'patched-candidate', recoverable: true,
+        composerPackage: res.package, version: pin,
+        remediation: `${label} is modified from its published version. Bump-first to v${pin}, then patch the residual (resolved at apply time).` };
+    }
     return { key: comp.slug, category: res.source, recoverable: true,
       composerPackage: res.package, version: pin,
       remediation: `Add/bump \`${res.package}:${versionConstraint(pin)}\` in composer.json (server has ${label}${treeVersion ? ` v${treeVersion}` : ''}).` };

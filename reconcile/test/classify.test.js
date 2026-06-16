@@ -74,3 +74,28 @@ test('build-only path -> needs-redeploy', async () => {
   const out2 = await classify([{ path: 'robots.txt', side: 'build-only' }], { resolvers, treeRoot: '/nonexistent' });
   assert.strictEqual(findKey(out2, 'robots.txt').category, 'needs-redeploy');
 });
+
+test('modified wpackagist plugin -> patched-candidate (recoverable, composer package set)', async () => {
+  const fs = require('fs'); const os = require('os'); const path = require('path');
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'code-snippets', 'code-snippets.php'), '<?php /* Plugin Name: Code Snippets\nVersion: 3.6.5.1 */');
+  const items = [{ path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' }];
+  const modifiedPaths = new Set(['plugins/code-snippets/code-snippets.php']);
+  const out = await classify(items, { resolvers, treeRoot, modifiedPaths });
+  const c = findKey(out, 'code-snippets');
+  assert.strictEqual(c.category, 'patched-candidate');
+  assert.strictEqual(c.recoverable, true);
+  assert.strictEqual(c.composerPackage, 'wpackagist-plugin/code-snippets');
+  assert.strictEqual(c.version, '3.6.5.1');
+});
+
+test('resolvable plugin with NO modified paths still -> plain add (not patched)', async () => {
+  const out = await classify([{ path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' }], { resolvers, treeRoot: '/nonexistent' });
+  assert.strictEqual(findKey(out, 'code-snippets').category, 'wpackagist-plugin');
+});
+
+test('modifiedPaths defaults to empty when omitted (backward compatible)', async () => {
+  const out = await classify([{ path: 'plugins/churn-solution/churn.php', side: 'remote-only' }], { resolvers, treeRoot: '/nonexistent' });
+  assert.strictEqual(findKey(out, 'churn-solution').category, 'satispress'); // unchanged
+});
