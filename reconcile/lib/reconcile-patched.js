@@ -16,6 +16,22 @@ const { generatePatch, upsertExtraPatches } = require('./patch-gen');
 async function reconcilePatched(o) {
   const pluginRoot = o.pluginRoot || `plugins/${o.slug}`;
   const installedDir = path.join(o.projectDir, pluginRoot);
+  const composerPath = path.join(o.projectDir, 'composer.json');
+
+  // 0. Drop any existing patch entry for this package so the bump-first reinstall
+  //    yields the TRUE published source (cweagans reapplies registered patches on
+  //    install/reinstall). Without this, an "already-patched refresh" would diff
+  //    against the previously-patched state and the regenerated patch would not
+  //    apply cleanly from pristine.
+  if (fs.existsSync(composerPath)) {
+    const c0 = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
+    if (c0.extra && c0.extra.patches && c0.extra.patches[o.pkg]) {
+      delete c0.extra.patches[o.pkg];
+      fs.writeFileSync(composerPath, JSON.stringify(c0, null, 4) + '\n');
+      // Relock so the removed patch is no longer applied on the next install.
+      await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
+    }
+  }
 
   // 1. Restore pristine published files (bump-first reinstall).
   await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
@@ -30,7 +46,6 @@ async function reconcilePatched(o) {
   const patchFile = `./patches/${o.slug}.patch`;
   fs.writeFileSync(path.join(o.projectDir, 'patches', `${o.slug}.patch`), patch);
 
-  const composerPath = path.join(o.projectDir, 'composer.json');
   const composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
   const { composer: next } = upsertExtraPatches(composer, o.pkg, {
     description: `Reconciled from server drift for ${o.slug}`,
