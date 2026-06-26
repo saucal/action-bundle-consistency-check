@@ -68,3 +68,25 @@ test('flag-only: sensitive item leaves composer untouched, no runner call, empty
   assert.strictEqual(runner.calls.length, 0);
   assert.deepStrictEqual(res.applied, []);
 });
+
+test('no cweagans: a modified-from-published plugin is flagged, never bumped (no composer call)', async () => {
+  const sourceDir = tmpSource(); // composer.json has require {} — no cweagans/composer-patches
+  const runner = fakeRunner();
+  const manifestText = 'deleting plugins/code-snippets/code-snippets.php\n';
+  // content diff marks the file as modified (M) -> classify yields patched-candidate.
+  const contentDiffText = 'diff --git plugins/code-snippets/code-snippets.php plugins/code-snippets/code-snippets.php\n@@ -1 +1 @@\n-a\n+b\n';
+
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText, contentDiffText, resolvers, runner });
+
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.category, 'patch-unsupported');
+  assert.strictEqual(c.recoverable, false);
+
+  // Must NOT bump/install (that would discard the customization) and must NOT patch.
+  assert.strictEqual(runner.calls.length, 0, 'no composer call');
+  const composer = JSON.parse(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'));
+  assert.deepStrictEqual(composer.require, {}, 'composer.json untouched');
+
+  assert.ok(res.applied.includes('patched:code-snippets:skipped-no-cweagans'), res.applied.join(','));
+  assert.strictEqual(res.outcome, 'unrecoverable-only');
+});

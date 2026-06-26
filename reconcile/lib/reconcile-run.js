@@ -24,7 +24,6 @@ async function reconcileRun(o) {
   const items = parseManifest(o.manifestText);
   const mods = modifiedPaths(parseContentDiff(o.contentDiffText || ''));
   const classified = await classify(items, { resolvers: o.resolvers, treeRoot: o.treeRoot, modifiedPaths: mods });
-  const outcome = decideOutcome(classified);
 
   const composerPath = path.join(o.sourceDir, 'composer.json');
   const hasComposer = fs.existsSync(composerPath);
@@ -32,6 +31,20 @@ async function reconcileRun(o) {
   let composerChanged = false;
   const applied = [];
   const toUpdate = new Set();
+
+  // Guard: patch reconciliation needs cweagans/composer-patches. Without it we cannot patch,
+  // and bumping a modified-from-published plugin would DISCARD the customization — so downgrade
+  // patched-candidate items to a flagged (non-recoverable) state instead.
+  const hasCweagans = !!(composer && composer.require && composer.require['cweagans/composer-patches']);
+  if (!hasCweagans) {
+    for (const c of classified) {
+      if (c.category !== 'patched-candidate') continue;
+      c.category = 'patch-unsupported';
+      c.recoverable = false;
+      c.remediation = `${c.key} is modified from its published version, but cweagans/composer-patches is not installed in this project. Add it to enable patch reconciliation, or patch manually.`;
+      applied.push(`patched:${c.key}:skipped-no-cweagans`);
+    }
+  }
 
   // Pass 1 — require add/bump (also pins patched-candidate to its target version).
   for (const c of classified) {
@@ -64,6 +77,8 @@ async function reconcileRun(o) {
     applied.push(`patched:${c.key}:${res.action}`);
   }
 
+  // Compute outcome last so the cweagans downgrade is reflected.
+  const outcome = decideOutcome(classified);
   return { classified, outcome, applied };
 }
 
