@@ -100,14 +100,24 @@ async function reconcileRun(o) {
 
     if (!o.runner) { if (r.changed) composerChanged = true; continue; }
 
-    const upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+    // Partial update first: keep every other package at its locked version so a pre-existing
+    // unsatisfiable sibling (e.g. a delisted plugin already in the repo) can't fail THIS plugin's
+    // solve. Escalate to -W only if the plugin genuinely needs its own dependencies co-updated.
+    let upd = await o.runner.composer(['update', c.composerPackage, '--no-progress'], { cwd: o.sourceDir });
+    if (upd.code !== 0) {
+      upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+    }
     if (upd.code !== 0) {
       // Unsatisfiable — restore the prior constraint (or drop the add) so composer.json stays installable.
       composer = (had ? upsertRequire(composer, c.composerPackage, prev) : removeRequire(composer, c.composerPackage)).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       c.recoverable = false;
       c.category = 'version-unavailable';
-      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but no published package satisfies \`${c.composerPackage}:${constraint}\` — composer could not install it, so merging would not bring the site in sync. Publish it to SatisPress (or correct the version) and re-run.`;
+      // Surface composer's own reason so the log/PR say WHY (missing version vs. stability vs. a
+      // broken global solve), instead of an opaque "unavailable".
+      c.composerOutput = ((upd.stdout || '') + (upd.stderr || '')).trim().slice(-1600);
+      const reason = firstComposerError(c.composerOutput);
+      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but composer could not install \`${c.composerPackage}:${constraint}\`${reason ? ` — ${reason}` : ''}. Merging would not bring the site in sync; resolve and re-run.`;
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }
@@ -133,6 +143,14 @@ async function reconcileRun(o) {
   // Compute outcome last so the cweagans downgrade is reflected.
   const outcome = decideOutcome(classified);
   return { classified, outcome, applied };
+}
+
+/** Pull the most informative line out of composer's error output for a one-line reason. */
+function firstComposerError(out) {
+  if (!out) return '';
+  const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l));
+  return (hit || lines[lines.length - 1] || '').slice(0, 300);
 }
 
 module.exports = { reconcileRun };
