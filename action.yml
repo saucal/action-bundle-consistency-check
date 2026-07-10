@@ -166,7 +166,15 @@ runs:
         MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
         RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
+      run: |
+        # Authenticate composer against the private SatisPress repo the same way deployment does
+        # (global auth.json, read by every later composer call). composer loads ALL repo metadata
+        # on any update, so this is required even to add a wpackagist-only plugin.
+        if [ -n "$SATISPRESS_TOKEN" ]; then
+          host=$(printf '%s' "$SATISPRESS_URL" | sed -E 's,^https?://,,; s,/.*$,,')
+          composer config --global --auth "http-basic.$host" "$SATISPRESS_TOKEN" "$host"
+        fi
+        node "$GITHUB_ACTION_PATH/reconcile/index.js"
 
     - name: Signal Failure to slack
       if: ${{ failure() }}

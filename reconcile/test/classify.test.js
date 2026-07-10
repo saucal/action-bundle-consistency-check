@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { classify, versionConstraint } = require('../lib/classify');
+const { classify, versionConstraint, isComposerVersion } = require('../lib/classify');
 
 // Resolvers stub: code-snippets is on wpackagist, churn-solution on satispress, others unknown.
 const resolvers = {
@@ -24,6 +24,28 @@ function findKey(out, key) { return out.find((c) => c.key === key); }
 test('versionConstraint', () => {
   assert.strictEqual(versionConstraint('3.6.5'), '>=3.6.5');
   assert.strictEqual(versionConstraint(null), '*');
+});
+
+test('isComposerVersion accepts composer-legal versions, rejects WP dev headers', () => {
+  for (const v of ['10.7.0', '1.2', '3.6.5.1', '4.0.0-beta2', '4.0.0-RC1', '2.0.0-patch3']) {
+    assert.ok(isComposerVersion(v), `should accept ${v}`);
+  }
+  for (const v of ['4.0.0-dev2', 'dev-trunk', '4.0.x-dev', 'nightly', '', null]) {
+    assert.ok(!isComposerVersion(v), `should reject ${v}`);
+  }
+});
+
+test('unparseable header version falls back to resolver version (never emits a bad constraint)', async () => {
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'official-facebook-pixel'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'official-facebook-pixel', 'facebook.php'),
+    '<?php /* Plugin Name: FB\nVersion: 4.0.0-dev2 */'); // composer-illegal header
+  const items = [{ path: 'plugins/official-facebook-pixel/facebook.php', side: 'remote-only' }];
+  const out = await classify(items, { resolvers, treeRoot });
+  const c = findKey(out, 'official-facebook-pixel');
+  assert.strictEqual(c.recoverable, true);
+  assert.strictEqual(c.version, '3.0.0'); // resolver's published version, not the dev header
+  assert.strictEqual(versionConstraint(c.version), '>=3.0.0');
 });
 
 test('wpackagist plugin -> recoverable composer add (version from tree header when present)', async () => {
