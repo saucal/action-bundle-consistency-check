@@ -54,4 +54,47 @@ function ensureCweagansSetup(composer) {
   return { composer: next, changed };
 }
 
-module.exports = { upsertRequire, ensureCweagansSetup };
+/** Find a top-level `"key": {...}` or `"key": [...]` block, brace-balanced and string-aware. */
+function extractKeyBlock(text, key) {
+  const m = text.match(new RegExp(`"${key}"\\s*:\\s*`));
+  if (!m) return null;
+  let i = m.index + m[0].length;
+  const open = text[i];
+  if (open !== '{' && open !== '[') return null;
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === open) depth++;
+    else if (ch === close && --depth === 0) return { start: m.index, end: i + 1, text: text.slice(m.index, i + 1) };
+  }
+  return null;
+}
+
+/**
+ * Serialize composer.json. Splices the original `repositories` block back so composer's
+ * integer-indexed repository keys (e.g. "0") are not reordered by JSON.stringify's
+ * integer-key hoisting — keeping the reconciliation diff limited to real changes.
+ * ponytail: only `repositories` is preserved — the one composer key that uses numeric indices.
+ * @param {object} obj
+ * @param {string} [originalText] the composer.json we read before editing (require untouched)
+ * @returns {string}
+ */
+function serializeComposer(obj, originalText) {
+  let out = JSON.stringify(obj, null, 4) + '\n';
+  if (originalText) {
+    const orig = extractKeyBlock(originalText, 'repositories');
+    const cur = extractKeyBlock(out, 'repositories');
+    if (orig && cur) out = out.slice(0, cur.start) + orig.text + out.slice(cur.end);
+  }
+  return out;
+}
+
+module.exports = { upsertRequire, ensureCweagansSetup, serializeComposer };

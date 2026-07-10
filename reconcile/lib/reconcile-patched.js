@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { generatePatch, upsertExtraPatches } = require('./patch-gen');
+const { serializeComposer } = require('./composer');
 
 /**
  * @param {object} o
@@ -24,10 +25,11 @@ async function reconcilePatched(o) {
   //    against the previously-patched state and the regenerated patch would not
   //    apply cleanly from pristine.
   if (fs.existsSync(composerPath)) {
-    const c0 = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
+    const c0text = fs.readFileSync(composerPath, 'utf8');
+    const c0 = JSON.parse(c0text);
     if (c0.extra && c0.extra.patches && c0.extra.patches[o.pkg]) {
       delete c0.extra.patches[o.pkg];
-      fs.writeFileSync(composerPath, JSON.stringify(c0, null, 4) + '\n');
+      fs.writeFileSync(composerPath, serializeComposer(c0, c0text));
       // Relock so the removed patch is no longer applied on the next install.
       await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
     }
@@ -46,13 +48,14 @@ async function reconcilePatched(o) {
   const patchFile = `./patches/${o.slug}.patch`;
   fs.writeFileSync(path.join(o.projectDir, 'patches', `${o.slug}.patch`), patch);
 
-  const composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
+  const composerText = fs.readFileSync(composerPath, 'utf8');
+  const composer = JSON.parse(composerText);
   const { composer: next } = upsertExtraPatches(composer, o.pkg, {
     description: `Reconciled from server drift for ${o.slug}`,
     url: patchFile,
     depth: 2,
   });
-  fs.writeFileSync(composerPath, JSON.stringify(next, null, 4) + '\n');
+  fs.writeFileSync(composerPath, serializeComposer(next, composerText));
 
   // 4. Relock + apply.
   await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
