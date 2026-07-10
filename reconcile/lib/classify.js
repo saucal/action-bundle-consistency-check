@@ -62,10 +62,6 @@ async function componentVerdict(comp, ctx) {
   const { resolvers, treeRoot, modifiedPaths = new Set() } = ctx;
   const label = `${comp.kind} ${comp.slug}`;
 
-  if (comp.paths.some((it) => isSensitive(it.path))) {
-    return { key: comp.slug, category: 'sensitive', recoverable: false,
-      remediation: `Sensitive file inside ${label}. Review manually.` };
-  }
   if (comp.paths.every((it) => isIgnorable(it.path))) {
     return { key: comp.slug, category: 'ignorable', recoverable: false,
       remediation: `All drift in ${label} is runtime/junk. Add to SSH_IGNORE_LIST.` };
@@ -87,6 +83,13 @@ async function componentVerdict(comp, ctx) {
     return { key: comp.slug, category: res.source, recoverable: true,
       composerPackage: res.package, version: pin, root: comp.root, kind: comp.kind,
       remediation: `Add/bump \`${res.package}:${versionConstraint(pin)}\` in composer.json (server has ${label}${treeVersion ? ` v${treeVersion}` : ''}).` };
+  }
+
+  // Not resolvable to a package: only now consider flags. A sensitive-looking file bundled
+  // inside a resolvable plugin must NOT block the add above — composer installs pristine.
+  if (comp.paths.some((it) => isSensitive(it.path))) {
+    return { key: comp.slug, category: 'sensitive', recoverable: false,
+      remediation: `Sensitive file inside ${label}, which is not resolvable to a package. Review manually.` };
   }
 
   if (comp.paths.every((it) => isCompiledAsset(it.path) || isVendorPath(it.path))) {

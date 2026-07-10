@@ -106,3 +106,21 @@ test('resolvable component verdict carries root and kind', async () => {
   assert.strictEqual(c.root, 'plugins/code-snippets');
   assert.strictEqual(c.kind, 'plugin');
 });
+
+test('resolvable plugin with a sensitive-looking bundled file still classifies as an add', async () => {
+  const items = [
+    { path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' },
+    { path: 'plugins/code-snippets/includes/wp-config-helper.php', side: 'remote-only' }, // matches sensitive regex
+  ];
+  const out = await classify(items, { resolvers, treeRoot: '/nonexistent' });
+  const c = findKey(out, 'code-snippets');
+  assert.strictEqual(c.category, 'wpackagist-plugin');
+  assert.strictEqual(c.recoverable, true);
+});
+
+test('non-resolvable plugin with a sensitive file is still flagged sensitive', async () => {
+  const out = await classify([{ path: 'plugins/unknownplug/secret-credentials.php', side: 'remote-only' }], { resolvers, treeRoot: '/nonexistent' });
+  const c = findKey(out, 'unknownplug');
+  assert.strictEqual(c.category, 'sensitive');
+  assert.strictEqual(c.recoverable, false);
+});

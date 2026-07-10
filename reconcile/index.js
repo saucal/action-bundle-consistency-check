@@ -86,9 +86,11 @@ async function sh(cmd, args, opts = {}) {
     return;
   }
 
-  // 3. Stage tracked source changes (composer.json/lock, patches/, patches.lock.json).
-  //    Installed plugins/themes are gitignored vendored artifacts — they are not committed.
-  await sh('git', ['add', '-A'], { cwd });
+  // 3. Stage ONLY the reconcile outputs — not `git add -A`, which would also commit
+  //    build-injected files (mu-plugins, generated drop-ins) that aren't source changes.
+  const OUTPUT_PATHS = ['composer.json', 'composer.lock', 'patches', 'patches.lock.json', '.patches_applied'];
+  const toStage = OUTPUT_PATHS.filter((p) => fs.existsSync(path.join(cwd, p)));
+  if (toStage.length) await sh('git', ['add', '--', ...toStage], { cwd });
   const staged = await sh('git', ['diff', '--cached', '--name-only'], { cwd });
   if (!staged.out.trim()) {
     await core.summary.addRaw(body).write();

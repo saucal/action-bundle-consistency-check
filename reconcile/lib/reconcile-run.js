@@ -4,7 +4,7 @@ const path = require('path');
 const { parseManifest } = require('./parse-drift');
 const { parseContentDiff, modifiedPaths } = require('./parse-content-diff');
 const { classify, versionConstraint } = require('./classify');
-const { upsertRequire, ensureCweagansSetup } = require('./composer');
+const { upsertRequire, ensureCweagansSetup, serializeComposer } = require('./composer');
 const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
 
@@ -27,7 +27,8 @@ async function reconcileRun(o) {
 
   const composerPath = path.join(o.sourceDir, 'composer.json');
   const hasComposer = fs.existsSync(composerPath);
-  let composer = hasComposer ? JSON.parse(fs.readFileSync(composerPath, 'utf8')) : null;
+  const originalComposerText = hasComposer ? fs.readFileSync(composerPath, 'utf8') : null;
+  let composer = originalComposerText ? JSON.parse(originalComposerText) : null;
   let composerChanged = false;
   const applied = [];
   const toUpdate = new Set();
@@ -65,7 +66,7 @@ async function reconcileRun(o) {
     if (r.changed) composerChanged = true;
     toUpdate.add(c.composerPackage);
   }
-  if (composerChanged) fs.writeFileSync(composerPath, JSON.stringify(composer, null, 4) + '\n');
+  if (composerChanged) fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
 
   // Resolve the new constraints so installed plugins reflect them.
   if (toUpdate.size && o.runner) {
