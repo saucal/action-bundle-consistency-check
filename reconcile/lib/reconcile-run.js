@@ -33,6 +33,22 @@ async function reconcileRun(o) {
   let bootstrapCweagans = false;
   const applied = [];
 
+  // Baseline install: probe the composer environment (PHP, composer binary, SatisPress auth)
+  // and materialise vendor/lock so per-package updates are incremental. If this fails, composer
+  // cannot verify anything here — surface the real cause (env/auth) instead of misreporting
+  // every add as "version-unavailable". Once it passes, a per-package update failure genuinely
+  // means that version is unsatisfiable.
+  const needsComposer = classified.some((c) => c.recoverable && c.composerPackage);
+  if (o.runner && hasComposer && needsComposer) {
+    const inst = await o.runner.composer(['install', '--no-progress'], { cwd: o.sourceDir });
+    if (inst.code !== 0) {
+      throw new Error(
+        'composer install failed in the reconcile environment — check PHP/composer setup and ' +
+        'SatisPress auth (COMPOSER_AUTH). Composer output:\n' + ((inst.stdout || '') + (inst.stderr || ''))
+      );
+    }
+  }
+
   // Patch reconciliation needs cweagans/composer-patches. If a modified-from-published plugin
   // is present but the project lacks it, BOOTSTRAP the setup into the PR (per saucal's
   // "Automatically patching a plugin" doc) so patch recovery works everywhere. Only when there

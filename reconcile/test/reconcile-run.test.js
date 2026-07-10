@@ -42,13 +42,14 @@ test('add/bump: recoverable wpackagist add writes require, runs composer update,
   const composer = JSON.parse(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'));
   assert.strictEqual(composer.require['wpackagist-plugin/code-snippets'], '>=3.6.5');
 
-  // fake runner received exactly one `composer update <pkg> -W` call.
-  assert.strictEqual(runner.calls.length, 1);
-  const { args, opts } = runner.calls[0];
-  assert.strictEqual(args[0], 'update');
-  assert.ok(args.includes('wpackagist-plugin/code-snippets'));
-  assert.ok(args.includes('-W'));
-  assert.strictEqual(opts.cwd, sourceDir);
+  // fake runner: a baseline `composer install` (env probe) then `composer update <pkg> -W`.
+  assert.strictEqual(runner.calls.length, 2);
+  assert.strictEqual(runner.calls[0].args[0], 'install');
+  const upd = runner.calls.find((k) => k.args[0] === 'update');
+  assert.ok(upd, 'an update call was made');
+  assert.ok(upd.args.includes('wpackagist-plugin/code-snippets'));
+  assert.ok(upd.args.includes('-W'));
+  assert.strictEqual(upd.opts.cwd, sourceDir);
 
   assert.deepStrictEqual(res.applied, ['require:wpackagist-plugin/code-snippets']);
 });
@@ -56,8 +57,15 @@ test('add/bump: recoverable wpackagist add writes require, runs composer update,
 test('unavailable: composer update fails -> constraint reverted, flagged version-unavailable', async () => {
   const sourceDir = tmpSource();
   const before = fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8');
-  // Runner that rejects the version (simulates "no published package satisfies the constraint").
-  const runner = { calls: [], composer(args, opts) { this.calls.push({ args, opts }); return { code: 1, stdout: '', stderr: 'not found' }; } };
+  // Env works (install ok) but the version is unsatisfiable (update fails) — the exact case
+  // the availability gate must catch without misattributing it to a broken environment.
+  const runner = {
+    calls: [],
+    composer(args, opts) {
+      this.calls.push({ args, opts });
+      return { code: args[0] === 'install' ? 0 : 1, stdout: '', stderr: args[0] === 'install' ? '' : 'not found' };
+    },
+  };
   const manifestText = 'deleting plugins/code-snippets/code-snippets.php\n';
 
   const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText, resolvers, runner });

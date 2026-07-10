@@ -143,6 +143,14 @@ runs:
         name: ${{ steps.artifact-meta.outputs.prefix }}-consistency-diffs
         path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
 
+    - name: Setup PHP + Composer for reconcile
+      if: ${{ failure() && inputs.reconcile == '1' }}
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        tools: composer
+        coverage: none
+
     - name: Reconcile drift
       if: ${{ failure() && inputs.reconcile == '1' }}
       shell: bash
