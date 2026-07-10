@@ -112,9 +112,12 @@ async function sh(cmd, args, opts = {}) {
   const title = `Reconcile server drift on ${ref}`;
   const existing = await sh('gh', ['pr', 'list', '-R', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
   if (existing.out.trim()) {
-    const edited = await sh('gh', ['pr', 'edit', existing.out.trim(), '-R', repo, '--title', title, '--body-file', bodyFile]);
-    if (edited.code !== 0) { core.setFailed(`gh pr edit failed:\n${edited.out}`); return; }
-    core.info(`Updated PR #${existing.out.trim()}.`);
+    // Use the REST API (needs only `repo` scope) instead of `gh pr edit`, which queries the
+    // `login` field via GraphQL and requires `read:org` that CI tokens usually lack.
+    const num = existing.out.trim();
+    const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=${title}`, '-F', `body=@${bodyFile}`]);
+    if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return; }
+    core.info(`Updated PR #${num}.`);
   } else {
     const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', branch, '--base', ref, '--title', title, '--body-file', bodyFile]);
     if (created.code !== 0) { core.setFailed(`gh pr create failed:\n${created.out}`); return; }
