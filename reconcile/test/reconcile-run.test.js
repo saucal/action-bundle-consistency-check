@@ -42,13 +42,14 @@ test('add/bump: recoverable wpackagist add writes require, runs composer update,
   const composer = JSON.parse(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'));
   assert.strictEqual(composer.require['wpackagist-plugin/code-snippets'], '>=3.6.5');
 
-  // fake runner: a baseline `composer install` (env probe) then `composer update <pkg> -W`.
+  // fake runner: a baseline `composer install` (env probe) then a partial `composer update <pkg>`
+  // (no -W — siblings stay locked). It succeeds, so no -W escalation.
   assert.strictEqual(runner.calls.length, 2);
   assert.strictEqual(runner.calls[0].args[0], 'install');
   const upd = runner.calls.find((k) => k.args[0] === 'update');
   assert.ok(upd, 'an update call was made');
   assert.ok(upd.args.includes('wpackagist-plugin/code-snippets'));
-  assert.ok(upd.args.includes('-W'));
+  assert.ok(!upd.args.includes('-W'), 'first update is partial (no -W)');
   assert.strictEqual(upd.opts.cwd, sourceDir);
 
   assert.deepStrictEqual(res.applied, ['require:wpackagist-plugin/code-snippets']);

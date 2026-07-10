@@ -100,7 +100,13 @@ async function reconcileRun(o) {
 
     if (!o.runner) { if (r.changed) composerChanged = true; continue; }
 
-    const upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+    // Partial update first: keep every other package at its locked version so a pre-existing
+    // unsatisfiable sibling (e.g. a delisted plugin already in the repo) can't fail THIS plugin's
+    // solve. Escalate to -W only if the plugin genuinely needs its own dependencies co-updated.
+    let upd = await o.runner.composer(['update', c.composerPackage, '--no-progress'], { cwd: o.sourceDir });
+    if (upd.code !== 0) {
+      upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+    }
     if (upd.code !== 0) {
       // Unsatisfiable — restore the prior constraint (or drop the add) so composer.json stays installable.
       composer = (had ? upsertRequire(composer, c.composerPackage, prev) : removeRequire(composer, c.composerPackage)).composer;
