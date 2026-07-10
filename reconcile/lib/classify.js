@@ -7,6 +7,14 @@ const WP_CORE_RE = /(?:^|\/)(?:wp-admin|wp-includes)\//;
 
 function versionConstraint(v) { return v ? `>=${v}` : '*'; }
 
+// A WordPress plugin header version isn't always a legal composer version (e.g. "4.0.0-dev2":
+// `dev2` is not a valid stability suffix, so `>=4.0.0-dev2` makes composer.json unparseable).
+// Only pin to versions composer can actually parse; otherwise fall back / leave unpinned.
+function isComposerVersion(v) {
+  return typeof v === 'string' &&
+    /^v?\d+(\.\d+){0,3}(?:[.-]?(?:alpha|beta|rc|a|b|p|patch|pl|stable)\.?\d*)?$/i.test(v.trim());
+}
+
 /**
  * @param {import('./parse-drift').DriftItem[]} items
  * @param {{resolvers:{wpackagist:Function,satispress:Function}, treeRoot:string}} ctx
@@ -73,12 +81,15 @@ async function componentVerdict(comp, ctx) {
 
   const res = (await resolvers.wpackagist(comp.kind, comp.slug)) || (await resolvers.satispress(comp.slug));
   if (res) {
-    const pin = treeVersion || res.version;
+    // Prefer the server's header version, but only if composer can parse it; else the resolver's
+    // (published) version; else leave unpinned (`*`) rather than emit a constraint composer rejects.
+    const pin = isComposerVersion(treeVersion) ? treeVersion
+      : (isComposerVersion(res.version) ? res.version : null);
     const isModified = comp.paths.some((it) => modifiedPaths.has(it.path));
     if (isModified) {
       return { key: comp.slug, category: 'patched-candidate', recoverable: true,
         composerPackage: res.package, version: pin, root: comp.root, kind: comp.kind,
-        remediation: `${label} is modified from its published version. Bump-first to v${pin}, then patch the residual (resolved at apply time).` };
+        remediation: `${label} is modified from its published version. Bump-first to ${pin ? `v${pin}` : 'its published version'}, then patch the residual (resolved at apply time).` };
     }
     return { key: comp.slug, category: res.source, recoverable: true,
       composerPackage: res.package, version: pin, root: comp.root, kind: comp.kind,
@@ -101,4 +112,4 @@ async function componentVerdict(comp, ctx) {
     remediation: `Premium/unknown ${label}${treeVersion ? ` v${treeVersion}` : ''} on server, not on wpackagist or SatisPress. Add to SatisPress or vendor manually.` };
 }
 
-module.exports = { classify, versionConstraint };
+module.exports = { classify, versionConstraint, isComposerVersion };

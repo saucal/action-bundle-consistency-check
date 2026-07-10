@@ -43,15 +43,8 @@ async function sh(cmd, args, opts = {}) {
   const satispressUrl = env('SATISPRESS_URL');
   const satispressToken = env('SATISPRESS_TOKEN');
   const branch = `reconciliation-${ref}`;
-
-  // Authenticate composer against the SatisPress repo for every subprocess the reconcile runs
-  // (composer inherits process.env). Without this, `composer update` 401s on the private repo
-  // metadata and no add can be verified. Convention (from action-maintenance/.github/
-  // composer-update): username = the SatisPress key, password = the host domain.
-  if (satispressToken && !process.env.COMPOSER_AUTH) {
-    const host = (satispressUrl || 'https://packages.saucal.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    process.env.COMPOSER_AUTH = JSON.stringify({ 'http-basic': { [host]: { username: satispressToken, password: host } } });
-  }
+  // Composer SatisPress auth is configured by the action step (composer config --global --auth)
+  // before this script runs, so every composer subprocess here reads it from auth.json.
 
   if (!manifestPath || !fs.existsSync(manifestPath)) {
     core.warning('No drift manifest available; nothing to reconcile.');
