@@ -135,6 +135,12 @@ function makeProject(o) {
     }
   }
 
+  // Simulate a project that installs plugins via composer but has no patching setup.
+  if (o.noCweagans) {
+    delete composer.require['cweagans/composer-patches'];
+    delete composer.config['allow-plugins']['cweagans/composer-patches'];
+  }
+
   fs.writeFileSync(
     path.join(dir, 'composer.json'),
     JSON.stringify(composer, null, 4) + '\n'

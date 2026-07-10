@@ -69,24 +69,33 @@ test('flag-only: sensitive item leaves composer untouched, no runner call, empty
   assert.deepStrictEqual(res.applied, []);
 });
 
-test('no cweagans: a modified-from-published plugin is flagged, never bumped (no composer call)', async () => {
+test('no cweagans: a modified-from-published plugin BOOTSTRAPS the patch setup, then patches', async () => {
   const sourceDir = tmpSource(); // composer.json has require {} — no cweagans/composer-patches
+  // Pristine installed copy (so reconcile-patched's generatePatch has a real dir to diff).
+  fs.mkdirSync(path.join(sourceDir, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'plugins', 'code-snippets', 'code-snippets.php'), '<?php // pristine\n');
+  // Server-state tree with the same plugin edited.
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'code-snippets', 'code-snippets.php'), '<?php // pristine\n// SERVER EDIT\n');
+
   const runner = fakeRunner();
   const manifestText = 'deleting plugins/code-snippets/code-snippets.php\n';
-  // content diff marks the file as modified (M) -> classify yields patched-candidate.
   const contentDiffText = 'diff --git plugins/code-snippets/code-snippets.php plugins/code-snippets/code-snippets.php\n@@ -1 +1 @@\n-a\n+b\n';
 
-  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText, contentDiffText, resolvers, runner });
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner });
 
-  const c = res.classified.find((x) => x.key === 'code-snippets');
-  assert.strictEqual(c.category, 'patch-unsupported');
-  assert.strictEqual(c.recoverable, false);
-
-  // Must NOT bump/install (that would discard the customization) and must NOT patch.
-  assert.strictEqual(runner.calls.length, 0, 'no composer call');
+  // cweagans setup was written into composer.json.
   const composer = JSON.parse(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'));
-  assert.deepStrictEqual(composer.require, {}, 'composer.json untouched');
+  assert.strictEqual(composer.require['cweagans/composer-patches'], '>=2.0.0', 'cweagans required');
+  assert.strictEqual(composer.config['allow-plugins']['cweagans/composer-patches'], true, 'cweagans allowed');
+  assert.ok(composer.scripts['post-install-cmd'].some((l) => l.includes('.patches_applied')), 'hook added');
+  assert.ok(res.applied.includes('bootstrap:cweagans'), res.applied.join(','));
 
-  assert.ok(res.applied.includes('patched:code-snippets:skipped-no-cweagans'), res.applied.join(','));
-  assert.strictEqual(res.outcome, 'unrecoverable-only');
+  // The plugin stays a recoverable patch candidate and gets patched (relock ran).
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.category, 'patched-candidate');
+  const cmds = runner.calls.map((k) => k.args.join(' '));
+  assert.ok(cmds.some((a) => a.includes('patches-relock')), cmds.join(' | '));
+  assert.ok(res.applied.some((a) => a.startsWith('patched:code-snippets')), res.applied.join(','));
 });

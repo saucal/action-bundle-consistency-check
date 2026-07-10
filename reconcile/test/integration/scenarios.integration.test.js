@@ -376,3 +376,35 @@ test('mixed: add + patch + junk -> all categories, outcome reconciled', async ()
   assert.ok(fs.existsSync(path.join(dir, 'plugins/newplug/newplug.php')), 'newplug installed');
   assert.match(read(path.join(dir, 'plugins/patchplug/patchplug.php')), /DRIFTED/, 'patchplug patched');
 });
+
+// --- 10. bootstrap cweagans on a repo that lacks it ---------------------
+test('bootstrap: repo without cweagans gets it installed + the plugin patched', async () => {
+  const { dir } = makeProject({
+    noCweagans: true,
+    plugins: [{ slug: 'patchplug', pkg: 'saucal/patchplug', version: '1.0.0', body: '// app code\n' }],
+  });
+  const before = JSON.parse(read(path.join(dir, 'composer.json')));
+  assert.ok(!before.require['cweagans/composer-patches'], 'starts without cweagans');
+
+  const installed = path.join(dir, 'plugins/patchplug/patchplug.php');
+  const serverDir = stageServer(dir, (sv) => {
+    const f = path.join(sv, 'plugins/patchplug/patchplug.php');
+    fs.writeFileSync(f, read(f).replace('// app code', '// app code DRIFTED'));
+  });
+
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({
+    sourceDir: dir,
+    treeRoot: serverDir,
+    manifestText,
+    contentDiffText,
+    resolvers: fakeResolvers,
+    runner: makeRunner(),
+  });
+
+  const after = JSON.parse(read(path.join(dir, 'composer.json')));
+  assert.strictEqual(after.require['cweagans/composer-patches'], '>=2.0.0', 'cweagans added to composer.json');
+  assert.ok(res.applied.includes('bootstrap:cweagans'), `applied: ${res.applied}`);
+  assert.match(read(installed), /DRIFTED/, 'plugin patched on disk after bootstrap');
+  assert.ok(fs.existsSync(path.join(dir, 'patches/patchplug.patch')), 'patch written');
+});

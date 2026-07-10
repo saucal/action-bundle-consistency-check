@@ -4,7 +4,7 @@ const path = require('path');
 const { parseManifest } = require('./parse-drift');
 const { parseContentDiff, modifiedPaths } = require('./parse-content-diff');
 const { classify, versionConstraint } = require('./classify');
-const { upsertRequire } = require('./composer');
+const { upsertRequire, ensureCweagansSetup } = require('./composer');
 const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
 
@@ -32,17 +32,28 @@ async function reconcileRun(o) {
   const applied = [];
   const toUpdate = new Set();
 
-  // Guard: patch reconciliation needs cweagans/composer-patches. Without it we cannot patch,
-  // and bumping a modified-from-published plugin would DISCARD the customization — so downgrade
-  // patched-candidate items to a flagged (non-recoverable) state instead.
+  // Patch reconciliation needs cweagans/composer-patches. If a modified-from-published plugin
+  // is present but the project lacks it, BOOTSTRAP the setup into the PR (per saucal's
+  // "Automatically patching a plugin" doc) so patch recovery works everywhere. Only when there
+  // is no composer.json at all do we flag instead (nothing to add it to).
+  const patchedCandidates = classified.filter((c) => c.category === 'patched-candidate');
   const hasCweagans = !!(composer && composer.require && composer.require['cweagans/composer-patches']);
-  if (!hasCweagans) {
-    for (const c of classified) {
-      if (c.category !== 'patched-candidate') continue;
-      c.category = 'patch-unsupported';
-      c.recoverable = false;
-      c.remediation = `${c.key} is modified from its published version, but cweagans/composer-patches is not installed in this project. Add it to enable patch reconciliation, or patch manually.`;
-      applied.push(`patched:${c.key}:skipped-no-cweagans`);
+  if (patchedCandidates.length && !hasCweagans) {
+    if (composer) {
+      const b = ensureCweagansSetup(composer);
+      composer = b.composer;
+      if (b.changed) {
+        composerChanged = true;
+        toUpdate.add('cweagans/composer-patches');
+        applied.push('bootstrap:cweagans');
+      }
+    } else {
+      for (const c of patchedCandidates) {
+        c.category = 'patch-unsupported';
+        c.recoverable = false;
+        c.remediation = `${c.key} is modified from its published version, but this project has no composer.json to add cweagans/composer-patches to. Patch manually.`;
+        applied.push(`patched:${c.key}:skipped-no-composer`);
+      }
     }
   }
 
