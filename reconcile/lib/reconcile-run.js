@@ -107,7 +107,11 @@ async function reconcileRun(o) {
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       c.recoverable = false;
       c.category = 'version-unavailable';
-      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but no published package satisfies \`${c.composerPackage}:${constraint}\` — composer could not install it, so merging would not bring the site in sync. Publish it to SatisPress (or correct the version) and re-run.`;
+      // Surface composer's own reason so the log/PR say WHY (missing version vs. stability vs. a
+      // broken global solve), instead of an opaque "unavailable".
+      c.composerOutput = ((upd.stdout || '') + (upd.stderr || '')).trim().slice(-1600);
+      const reason = firstComposerError(c.composerOutput);
+      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but composer could not install \`${c.composerPackage}:${constraint}\`${reason ? ` — ${reason}` : ''}. Merging would not bring the site in sync; resolve and re-run.`;
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }
@@ -133,6 +137,14 @@ async function reconcileRun(o) {
   // Compute outcome last so the cweagans downgrade is reflected.
   const outcome = decideOutcome(classified);
   return { classified, outcome, applied };
+}
+
+/** Pull the most informative line out of composer's error output for a one-line reason. */
+function firstComposerError(out) {
+  if (!out) return '';
+  const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l));
+  return (hit || lines[lines.length - 1] || '').slice(0, 300);
 }
 
 module.exports = { reconcileRun };

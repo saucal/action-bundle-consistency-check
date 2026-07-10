@@ -87,6 +87,14 @@ async function sh(cmd, args, opts = {}) {
   const { classified, outcome, applied } = result;
   core.info(`Reconcile outcome: ${outcome} | applied: ${applied.join(', ') || '(none)'}`);
 
+  // Surface composer's actual complaint for anything flagged unavailable (why the version
+  // couldn't be installed: missing version, stability, or a broken global solve).
+  for (const c of classified) {
+    if (c.category === 'version-unavailable' && c.composerOutput) {
+      core.warning(`composer could not install ${c.composerPackage}:\n${c.composerOutput}`);
+    }
+  }
+
   const body = reportBody(classified, { ref, runUrl });
 
   if (outcome === 'noop') {
