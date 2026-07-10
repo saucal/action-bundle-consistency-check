@@ -53,6 +53,24 @@ test('add/bump: recoverable wpackagist add writes require, runs composer update,
   assert.deepStrictEqual(res.applied, ['require:wpackagist-plugin/code-snippets']);
 });
 
+test('unavailable: composer update fails -> constraint reverted, flagged version-unavailable', async () => {
+  const sourceDir = tmpSource();
+  const before = fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8');
+  // Runner that rejects the version (simulates "no published package satisfies the constraint").
+  const runner = { calls: [], composer(args, opts) { this.calls.push({ args, opts }); return { code: 1, stdout: '', stderr: 'not found' }; } };
+  const manifestText = 'deleting plugins/code-snippets/code-snippets.php\n';
+
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText, resolvers, runner });
+
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.category, 'version-unavailable');
+  assert.strictEqual(c.recoverable, false);
+  // composer.json reverted to its original bytes — no uninstallable constraint left behind.
+  assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), before);
+  assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets:unavailable'), res.applied.join(','));
+  assert.strictEqual(res.outcome, 'unrecoverable-only');
+});
+
 test('flag-only: sensitive item leaves composer untouched, no runner call, empty applied', async () => {
   const sourceDir = tmpSource();
   const runner = fakeRunner();

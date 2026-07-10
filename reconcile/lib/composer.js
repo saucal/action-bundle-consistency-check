@@ -16,6 +16,20 @@ function upsertRequire(composer, pkg, constraint) {
   return { composer: next, changed };
 }
 
+/**
+ * Remove a require entry (used to revert an add whose constraint composer couldn't satisfy).
+ * Returns a new object (input untouched).
+ * @param {object} composer
+ * @param {string} pkg
+ * @returns {{composer:object, changed:boolean}}
+ */
+function removeRequire(composer, pkg) {
+  const next = JSON.parse(JSON.stringify(composer || {}));
+  const changed = !!(next.require && Object.prototype.hasOwnProperty.call(next.require, pkg));
+  if (next.require) delete next.require[pkg];
+  return { composer: next, changed };
+}
+
 const CWEAGANS = 'cweagans/composer-patches';
 // From saucal's "Automatically patching a plugin" doc: cweagans 2.0 has a lock file but
 // does not respect it on install, so this reinstall-on-hash-change hook is required.
@@ -97,4 +111,4 @@ function serializeComposer(obj, originalText) {
   return out;
 }
 
-module.exports = { upsertRequire, ensureCweagansSetup, serializeComposer };
+module.exports = { upsertRequire, removeRequire, ensureCweagansSetup, serializeComposer };

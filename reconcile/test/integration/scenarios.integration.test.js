@@ -377,6 +377,54 @@ test('mixed: add + patch + junk -> all categories, outcome reconciled', async ()
   assert.match(read(path.join(dir, 'plugins/patchplug/patchplug.php')), /DRIFTED/, 'patchplug patched');
 });
 
+// --- 11. unavailable version --------------------------------------------
+test('unavailable: server version exceeds anything published -> flagged, composer.json not broken', async () => {
+  // futureplug exists as a path repo at 1.0.0 only; server claims 2.0.0.
+  const { dir } = makeProject({
+    plugins: [
+      { slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' },
+      { slug: 'futureplug', pkg: 'saucal/futureplug', version: '1.0.0', body: '// future\n' },
+    ],
+  });
+  const composerPath = path.join(dir, 'composer.json');
+  const composer = JSON.parse(read(composerPath));
+  delete composer.require['saucal/futureplug'];
+  fs.writeFileSync(composerPath, JSON.stringify(composer, null, 4) + '\n');
+  const runner = makeRunner();
+  let r = await runner.composer(['update', 'saucal/futureplug', '-W', '--no-progress'], { cwd: dir });
+  assert.strictEqual(r.code, 0, r.stderr);
+  const composerBefore = read(composerPath);
+
+  // resolver maps futureplug -> package, but the server header (2.0.0) drives the pin.
+  const resolvers = {
+    async wpackagist() { return null; },
+    async satispress(slug) {
+      if (slug === 'futureplug') return { source: 'satispress', package: 'saucal/futureplug', version: '1.0.0' };
+      return null;
+    },
+  };
+
+  const serverDir = stageServer(dir, (sv) => {
+    const d = path.join(sv, 'plugins/futureplug');
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'futureplug.php'),
+      '<?php\n/**\n * Plugin Name: futureplug\n * Version: 2.0.0\n */\n// future\n');
+  });
+
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers, runner });
+
+  const c = findByKey(res.classified, 'futureplug');
+  assert.strictEqual(c.category, 'version-unavailable', `category: ${c && c.category}`);
+  assert.strictEqual(c.recoverable, false);
+  // composer.json is still installable — the unsatisfiable constraint was reverted.
+  const after = JSON.parse(read(composerPath));
+  assert.ok(!after.require['saucal/futureplug'], 'unavailable add reverted out of require');
+  assert.ok(after.require['saucal/baseplug'], 'existing deps preserved');
+  assert.strictEqual(read(composerPath), composerBefore, 'composer.json byte-identical to pre-reconcile');
+  assert.ok(res.applied.includes('require:saucal/futureplug:unavailable'), `applied: ${res.applied}`);
+});
+
 // --- 10. bootstrap cweagans on a repo that lacks it ---------------------
 test('bootstrap: repo without cweagans gets it installed + the plugin patched', async () => {
   const { dir } = makeProject({

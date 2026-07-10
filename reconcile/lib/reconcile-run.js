@@ -4,7 +4,7 @@ const path = require('path');
 const { parseManifest } = require('./parse-drift');
 const { parseContentDiff, modifiedPaths } = require('./parse-content-diff');
 const { classify, versionConstraint } = require('./classify');
-const { upsertRequire, ensureCweagansSetup, serializeComposer } = require('./composer');
+const { upsertRequire, removeRequire, ensureCweagansSetup, serializeComposer } = require('./composer');
 const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
 
@@ -30,8 +30,8 @@ async function reconcileRun(o) {
   const originalComposerText = hasComposer ? fs.readFileSync(composerPath, 'utf8') : null;
   let composer = originalComposerText ? JSON.parse(originalComposerText) : null;
   let composerChanged = false;
+  let bootstrapCweagans = false;
   const applied = [];
-  const toUpdate = new Set();
 
   // Patch reconciliation needs cweagans/composer-patches. If a modified-from-published plugin
   // is present but the project lacks it, BOOTSTRAP the setup into the PR (per saucal's
@@ -45,7 +45,7 @@ async function reconcileRun(o) {
       composer = b.composer;
       if (b.changed) {
         composerChanged = true;
-        toUpdate.add('cweagans/composer-patches');
+        bootstrapCweagans = true;
         applied.push('bootstrap:cweagans');
       }
     } else {
@@ -58,20 +58,45 @@ async function reconcileRun(o) {
     }
   }
 
-  // Pass 1 — require add/bump (also pins patched-candidate to its target version).
+  // Persist the cweagans bootstrap (and install it) before touching plugin requires.
+  if (composerChanged) fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+  if (bootstrapCweagans && o.runner) {
+    const upd = await o.runner.composer(['update', 'cweagans/composer-patches', '-W', '--no-progress'], { cwd: o.sourceDir });
+    if (upd.code !== 0) applied.push('bootstrap:cweagans:update-failed');
+  }
+
+  // Pass 1 — require add/bump (also pins patched-candidate to its target version), applied ONE
+  // package at a time so composer's resolver acts as the availability check. The version is
+  // derived from the server's plugin header; if no published package satisfies `>=<version>`
+  // (e.g. the server runs a dev/unreleased build), composer update fails — we then REVERT the
+  // constraint (never commit an uninstallable composer.json) and flag it as a decision rather
+  // than reporting a false "Applied". Without this, merging the PR would not bring the site
+  // back in sync. ponytail: sequential updates (n small); batch if a repo ever adds dozens.
   for (const c of classified) {
     if (!c.recoverable || !c.composerPackage || !composer) continue;
-    const r = upsertRequire(composer, c.composerPackage, versionConstraint(c.version));
-    composer = r.composer;
-    if (r.changed) composerChanged = true;
-    toUpdate.add(c.composerPackage);
-  }
-  if (composerChanged) fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+    const constraint = versionConstraint(c.version);
+    const had = !!(composer.require && Object.prototype.hasOwnProperty.call(composer.require, c.composerPackage));
+    const prev = had ? composer.require[c.composerPackage] : undefined;
 
-  // Resolve the new constraints so installed plugins reflect them.
-  if (toUpdate.size && o.runner) {
-    await o.runner.composer(['update', ...toUpdate, '-W', '--no-progress'], { cwd: o.sourceDir });
-    for (const p of toUpdate) applied.push(`require:${p}`);
+    const r = upsertRequire(composer, c.composerPackage, constraint);
+    composer = r.composer;
+    fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+
+    if (!o.runner) { if (r.changed) composerChanged = true; continue; }
+
+    const upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+    if (upd.code !== 0) {
+      // Unsatisfiable — restore the prior constraint (or drop the add) so composer.json stays installable.
+      composer = (had ? upsertRequire(composer, c.composerPackage, prev) : removeRequire(composer, c.composerPackage)).composer;
+      fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+      c.recoverable = false;
+      c.category = 'version-unavailable';
+      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but no published package satisfies \`${c.composerPackage}:${constraint}\` — composer could not install it, so merging would not bring the site in sync. Publish it to SatisPress (or correct the version) and re-run.`;
+      applied.push(`require:${c.composerPackage}:unavailable`);
+      continue;
+    }
+    if (r.changed) composerChanged = true;
+    applied.push(`require:${c.composerPackage}`);
   }
 
   // Pass 2 — patches for modified-from-published (after the package is at its target version).
