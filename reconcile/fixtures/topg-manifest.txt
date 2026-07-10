@@ -1,0 +1,12 @@
+deleting purge-found-debug.json
+deleting mu-plugins/00-sendlane-credentials.php
+deleting plugins/woocommerce-ajax-cart/wooajaxcart.php
+deleting plugins/woocommerce-ajax-cart/assets/wooajaxcart.min.js
+deleting plugins/code-snippets/code-snippets.php
+deleting plugins/microsoft-clarity/clarity.php
+deleting plugins/woocommerce-shipstation-integration/woocommerce-shipstation.php
+deleting plugins/cancellation-surveys-offers-for-woo-subscriptions/freemius/assets/css/admin/account.css
+deleting plugins/cancellation-surveys-offers-for-woo-subscriptions/cancellation-surveys-offers-woo-subscriptions.php
+deleting plugins/woocommerce-ajax-cart/
+plugins/microsoft-clarity/readme.txt
+cannot delete non-empty directory: plugins/churn-solution/vendor

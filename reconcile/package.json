@@ -1,0 +1,17 @@
+{
+  "name": "consistency-check-reconcile",
+  "version": "1.0.0",
+  "description": "Reconcile server drift detected by the consistency check into a source PR.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js"
+  },
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/exec": "^1.1.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

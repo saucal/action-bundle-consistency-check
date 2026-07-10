@@ -1,0 +1,3 @@
+cannot delete non-empty directory: plugins/official-facebook-pixel/vendor/facebook/php-business-sdk
+deleting plugins/official-facebook-pixel/vendor/facebook/php-business-sdk/
+deleting plugins/official-facebook-pixel/facebook-commerce.php
