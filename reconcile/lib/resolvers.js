@@ -4,8 +4,13 @@
  * @param {typeof fetch} f       injectable fetch (defaults to global)
  * @param {string} satispressUrl base URL of the SatisPress composer repo ('' disables it)
  * @param {string} satispressToken optional HTTP Basic auth token (license key)
+ * @param {string} [satispressPassword] HTTP Basic auth password. Must match the convention
+ *   composer itself uses (action-composer-auth / build-for-deployment.sh): the project's
+ *   composer.json `homepage`, protocol stripped — NOT empty. A mismatch here silently 401s
+ *   every SatisPress lookup, misclassifying an available package as unresolvable
+ *   ("premium-flag") instead of a normal add.
  */
-function makeResolvers(f = fetch, satispressUrl = '', satispressToken = '') {
+function makeResolvers(f = fetch, satispressUrl = '', satispressToken = '', satispressPassword = '') {
   async function wpackagist(kind, slug) {
     const url = `https://api.wordpress.org/${kind}s/info/1.0/${slug}.json`;
     try {
@@ -23,11 +28,10 @@ function makeResolvers(f = fetch, satispressUrl = '', satispressToken = '') {
     if (!satispressUrl) return null;
     const base = satispressUrl.replace(/\/$/, '');
     const url = `${base}/p2/saucal/${slug}.json`;
-    // SatisPress requires HTTP Basic auth. Exact user:pass must be confirmed before
-    // production (the build action uses `composer config http-basic.<host> <SATIS_KEY> ...`);
-    // here we send base64(token:) as a best effort and degrade to null (flag) on failure.
+    // SatisPress requires HTTP Basic auth: username = token, password = project homepage
+    // (matches composer's own auth.json, configured by action-composer-auth).
     const opts = satispressToken
-      ? { headers: { Authorization: `Basic ${Buffer.from(`${satispressToken}:`).toString('base64')}` } }
+      ? { headers: { Authorization: `Basic ${Buffer.from(`${satispressToken}:${satispressPassword}`).toString('base64')}` } }
       : undefined;
     try {
       const r = await f(url, opts);

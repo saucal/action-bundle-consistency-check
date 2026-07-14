@@ -69,7 +69,15 @@ async function sh(cmd, args, opts = {}) {
   if (checkedOut.code !== 0) { core.setFailed(`git checkout failed:\n${checkedOut.out}`); return; }
 
   // 2. Classify + apply (composer add/bump + patches) via the orchestrator core.
-  const resolvers = makeResolvers(fetch, satispressUrl, satispressToken);
+  // SatisPress Basic auth password must match what composer itself uses (action-composer-auth /
+  // build-for-deployment.sh: the project's `homepage`, protocol stripped) — otherwise this
+  // resolver silently 401s and misclassifies an available package as unresolvable.
+  let satispressPassword = '';
+  if (satispressToken) {
+    const hp = await sh('composer', ['config', 'homepage'], { cwd });
+    if (hp.code === 0) satispressPassword = hp.out.trim().replace(/^https?:\/\//, '');
+  }
+  const resolvers = makeResolvers(fetch, satispressUrl, satispressToken, satispressPassword);
   const runner = makeRunner();
   let result;
   try {

@@ -41,7 +41,7 @@ test('satispress returns null when url is empty', async () => {
   assert.strictEqual(await satispress('anything'), null);
 });
 
-test('satispress sends Authorization header when a token is provided', async () => {
+test('satispress sends Authorization header with an empty password when none is provided', async () => {
   let seenOpts;
   const url = 'https://packages.saucal.com/p2/saucal/churn-solution.json';
   const f = async (u, opts) => {
@@ -55,4 +55,18 @@ test('satispress sends Authorization header when a token is provided', async () 
   assert.ok(seenOpts && seenOpts.headers && seenOpts.headers.Authorization.startsWith('Basic '));
   const decoded = Buffer.from(seenOpts.headers.Authorization.slice('Basic '.length), 'base64').toString();
   assert.strictEqual(decoded, 'SECRET_KEY:');
+});
+
+test('satispress uses the given password (matches composer auth.json convention: token:homepage)', async () => {
+  let seenOpts;
+  const url = 'https://packages.saucal.com/p2/saucal/churn-solution.json';
+  const f = async (u, opts) => {
+    seenOpts = opts;
+    if (u !== url) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ packages: { 'saucal/churn-solution': [{ version: '2.1.0' }] } }) };
+  };
+  const { satispress } = makeResolvers(f, 'https://packages.saucal.com', 'SECRET_KEY', 'example.com');
+  await satispress('churn-solution');
+  const decoded = Buffer.from(seenOpts.headers.Authorization.slice('Basic '.length), 'base64').toString();
+  assert.strictEqual(decoded, 'SECRET_KEY:example.com');
 });
