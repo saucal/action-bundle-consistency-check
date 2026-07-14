@@ -146,3 +146,27 @@ test('non-resolvable plugin with a sensitive file is still flagged sensitive', a
   assert.strictEqual(c.category, 'sensitive');
   assert.strictEqual(c.recoverable, false);
 });
+
+test('vendor SDK "Credentials" classes are NOT sensitive (false-positive regression: amazon-s3-and-cloudfront-pro)', async () => {
+  // Real-world shape: a cloud-storage plugin bundles the AWS/GCP SDK under vendor/, whose
+  // class files are legitimately named *Credentials.php (credential-HANDLING code, not a
+  // secret). Non-vendor plugin files are also present, so with the false positive gone this
+  // should fall through to premium-flag (an adoption candidate), not sensitive.
+  const out = await classify([
+    { path: 'plugins/amazon-s3-and-cloudfront-pro/vendor/Aws3/Aws/Credentials/CredentialsInterface.php', side: 'remote-only' },
+    { path: 'plugins/amazon-s3-and-cloudfront-pro/vendor/Gcp/google/auth/src/Credentials/GCECredentials.php', side: 'remote-only' },
+    { path: 'plugins/amazon-s3-and-cloudfront-pro/view/settings.php', side: 'remote-only' },
+  ], { resolvers, treeRoot: '/nonexistent' });
+  const c = findKey(out, 'amazon-s3-and-cloudfront-pro');
+  assert.strictEqual(c.category, 'premium-flag', `expected premium-flag, got ${c.category}`);
+});
+
+test('a real secrets file directly in a component (not vendor/) still flags sensitive even alongside vendor noise', async () => {
+  const out = await classify([
+    { path: 'plugins/leakyplug/vendor/Aws3/Aws/Credentials/Credentials.php', side: 'remote-only' },
+    { path: 'plugins/leakyplug/wp-config-backup.php', side: 'remote-only' },
+  ], { resolvers, treeRoot: '/nonexistent' });
+  const c = findKey(out, 'leakyplug');
+  assert.strictEqual(c.category, 'sensitive');
+  assert.strictEqual(c.recoverable, false);
+});
