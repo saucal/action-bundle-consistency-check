@@ -98,7 +98,12 @@ async function componentVerdict(comp, ctx) {
 
   // Not resolvable to a package: only now consider flags. A sensitive-looking file bundled
   // inside a resolvable plugin must NOT block the add above — composer installs pristine.
-  if (comp.paths.some((it) => isSensitive(it.path))) {
+  // Exclude vendor/ paths from the sensitive check: bundled SDKs (AWS, Google Cloud, ...) ship
+  // dozens of legitimately-named `*Credentials.php` classes (credential-HANDLING code, not a
+  // secret file) which would otherwise false-positive every cloud-storage plugin as "sensitive"
+  // and permanently block it from adoption. A real secrets file directly in the component
+  // (not vendor/) still flags.
+  if (comp.paths.some((it) => isSensitive(it.path) && !isVendorPath(it.path))) {
     return { key: comp.slug, category: 'sensitive', recoverable: false,
       remediation: `Sensitive file inside ${label}, which is not resolvable to a package. Review manually.` };
   }
