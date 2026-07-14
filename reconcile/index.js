@@ -42,6 +42,7 @@ async function sh(cmd, args, opts = {}) {
   const runUrl = env('RUN_URL');
   const satispressUrl = env('SATISPRESS_URL');
   const satispressToken = env('SATISPRESS_TOKEN');
+  const adopt = /^(1|true)$/i.test(env('ADOPT_NON_COMPOSER'));
   const branch = `reconciliation-${ref}`;
   // Composer SatisPress auth is configured by the action step (composer config --global --auth)
   // before this script runs, so every composer subprocess here reads it from auth.json.
@@ -72,7 +73,7 @@ async function sh(cmd, args, opts = {}) {
   const runner = makeRunner();
   let result;
   try {
-    result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner });
+    result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt });
   } catch (e) {
     core.setFailed(`reconcile-run failed: ${e.stack || e}`);
     return;
@@ -101,6 +102,11 @@ async function sh(cmd, args, opts = {}) {
   const OUTPUT_PATHS = ['composer.json', 'composer.lock', 'patches', 'patches.lock.json', '.patches_applied'];
   const toStage = OUTPUT_PATHS.filter((p) => fs.existsSync(path.join(cwd, p)));
   if (toStage.length) await sh('git', ['add', '--', ...toStage], { cwd });
+  // Force-add adopted (vendored) component dirs — plugins/ is typically gitignored for
+  // composer-managed installs, so a plain `git add` would skip the newly-vendored source.
+  for (const root of (result.adoptedPaths || [])) {
+    await sh('git', ['add', '-f', '--', root], { cwd });
+  }
   const staged = await sh('git', ['diff', '--cached', '--name-only'], { cwd });
   if (!staged.out.trim()) {
     await core.summary.addRaw(body).write();

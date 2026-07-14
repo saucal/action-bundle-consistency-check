@@ -96,6 +96,67 @@ test('flag-only: sensitive item leaves composer untouched, no runner call, empty
   assert.deepStrictEqual(res.applied, []);
 });
 
+// Server tree carrying an unresolvable "premium" plugin (on neither wpackagist nor satispress).
+function premiumTree() {
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'premiumplug'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'premiumplug', 'premiumplug.php'), '<?php // premium\n');
+  return treeRoot;
+}
+const noResolve = { async wpackagist() { return null; }, async satispress() { return null; } };
+const premiumManifest = 'deleting plugins/premiumplug/premiumplug.php\n';
+
+test('adopt: premium-flag component is vendored into source when the flag is on', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = premiumTree();
+  // composer `show` returns nonzero (not resolvable) so adoption proceeds; other calls succeed.
+  const runner = { calls: [], composer(args) { this.calls.push(args); return { code: args[0] === 'show' ? 1 : 0, stdout: '', stderr: '' }; } };
+
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner, adopt: true });
+
+  const c = res.classified.find((x) => x.key === 'premiumplug');
+  assert.strictEqual(c.category, 'adopted');
+  assert.strictEqual(c.recoverable, true);
+  assert.ok(fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/premiumplug.php')), 'vendored into source');
+  assert.deepStrictEqual(res.adoptedPaths, ['plugins/premiumplug']);
+  assert.ok(res.applied.includes('adopt:premiumplug'), res.applied.join(','));
+});
+
+test('adopt: off by default -> premium-flag stays flagged, nothing vendored', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = premiumTree();
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner: fakeRunner() });
+
+  const c = res.classified.find((x) => x.key === 'premiumplug');
+  assert.strictEqual(c.category, 'premium-flag');
+  assert.strictEqual(c.recoverable, false);
+  assert.ok(!fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/premiumplug.php')));
+  assert.deepStrictEqual(res.adoptedPaths, []);
+});
+
+test('adopt: composer show finds the package -> skip vendoring (would fork a resolvable plugin)', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = premiumTree();
+  // `show` returns 0 => package IS resolvable => must not vendor.
+  const runner = { calls: [], composer(args) { this.calls.push(args); return { code: 0, stdout: '', stderr: '' }; } };
+
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner, adopt: true });
+
+  const c = res.classified.find((x) => x.key === 'premiumplug');
+  assert.strictEqual(c.category, 'premium-flag', 'unchanged — not adopted');
+  assert.ok(!fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/premiumplug.php')));
+  assert.ok(res.applied.includes('adopt:premiumplug:skipped-resolvable'), res.applied.join(','));
+});
+
+test('adopt: a sensitive component is never adopted (stays flagged), even with the flag on', async () => {
+  const sourceDir = tmpSource();
+  // credentials mu-plugin drift classifies as `sensitive`, not `premium-flag`.
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/spy/secret-credentials.php\n', resolvers: noResolve, runner: fakeRunner(), adopt: true });
+  const c = res.classified.find((x) => x.key === 'spy');
+  assert.strictEqual(c.category, 'sensitive');
+  assert.deepStrictEqual(res.adoptedPaths, []);
+});
+
 test('no cweagans: a modified-from-published plugin BOOTSTRAPS the patch setup, then patches', async () => {
   const sourceDir = tmpSource(); // composer.json has require {} — no cweagans/composer-patches
   // Pristine installed copy (so reconcile-patched's generatePatch has a real dir to diff).

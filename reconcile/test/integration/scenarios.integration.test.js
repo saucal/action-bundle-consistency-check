@@ -425,6 +425,34 @@ test('unavailable: server version exceeds anything published -> flagged, compose
   assert.ok(res.applied.includes('require:saucal/futureplug:unavailable'), `applied: ${res.applied}`);
 });
 
+// --- 12. adopt: unresolvable premium plugin vendored into source --------
+test('adopt: plugin on neither wpackagist nor SatisPress -> vendored into source (flag on)', async () => {
+  const { dir } = makeProject({
+    plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }],
+  });
+  // Nothing resolves — the plugin is genuinely unknown to composer (no path repo for it).
+  const resolvers = { async wpackagist() { return null; }, async satispress() { return null; } };
+
+  const serverDir = stageServer(dir, (sv) => {
+    const d = path.join(sv, 'plugins/premiumx');
+    fs.mkdirSync(path.join(d, 'inc'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'premiumx.php'), '<?php\n/* Plugin Name: premiumx */\n// premium code\n');
+    fs.writeFileSync(path.join(d, 'inc/helper.php'), '<?php // helper\n');
+  });
+
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({
+    sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText,
+    resolvers, runner: makeRunner(), adopt: true,
+  });
+
+  const c = findByKey(res.classified, 'premiumx');
+  assert.strictEqual(c.category, 'adopted', `category: ${c && c.category}`);
+  assert.ok(fs.existsSync(path.join(dir, 'plugins/premiumx/premiumx.php')), 'vendored main file');
+  assert.ok(fs.existsSync(path.join(dir, 'plugins/premiumx/inc/helper.php')), 'vendored nested file');
+  assert.ok(res.adoptedPaths.includes('plugins/premiumx'), `adoptedPaths: ${res.adoptedPaths}`);
+});
+
 // --- 10. bootstrap cweagans on a repo that lacks it ---------------------
 test('bootstrap: repo without cweagans gets it installed + the plugin patched', async () => {
   const { dir } = makeProject({
