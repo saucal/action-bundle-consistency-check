@@ -7,6 +7,8 @@ const { classify, versionConstraint } = require('./classify');
 const { upsertRequire, removeRequire, ensureCweagansSetup, serializeComposer } = require('./composer');
 const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
+const { adoptComponent } = require('./adopt');
+const { isSensitive } = require('./detectors');
 
 /**
  * Orchestrator core (no git/gh). Classifies drift and applies recoverable changes to the
@@ -140,9 +142,53 @@ async function reconcileRun(o) {
     applied.push(`patched:${c.key}:${res.action}`);
   }
 
+  // Pass 3 — adoption (opt-in via o.adopt). A component on neither wpackagist nor SatisPress can't
+  // be recovered through composer; as a last resort, vendor its server files into the repo so a
+  // deploy reproduces them. Auth-gated: only after the authenticated composer authoritatively
+  // confirms the package is unavailable (guards against a resolver false-negative), and sensitive
+  // files are never copied.
+  const adoptedPaths = [];
+  if (o.adopt) {
+    for (const c of classified) {
+      if (c.category !== 'premium-flag') continue;
+      const root = c.root || `plugins/${c.key}`;
+
+      // Authoritative re-check: if composer (authenticated) can see any candidate package, this is
+      // NOT an adoption case — it should be a composer add. Skip so we never fork a resolvable plugin.
+      if (o.runner) {
+        const names = [`wpackagist-plugin/${c.key}`, `wpackagist-theme/${c.key}`, `saucal/${c.key}`];
+        let resolvable = false;
+        for (const n of names) {
+          const s = await o.runner.composer(['show', n, '--all', '--no-interaction'], { cwd: o.sourceDir });
+          if (s.code === 0) { resolvable = true; break; }
+        }
+        if (resolvable) {
+          c.remediation = `${c.key} resolves via composer after all — re-run to add it via composer instead of vendoring.`;
+          applied.push(`adopt:${c.key}:skipped-resolvable`);
+          continue;
+        }
+      }
+
+      try {
+        const res = adoptComponent({ sourceDir: o.sourceDir, treeRoot: o.treeRoot, root, isSensitive });
+        c.category = res.skipped > 0 ? 'adopted-lossy' : 'adopted';
+        c.recoverable = true;
+        c.adoptedRoot = root;
+        c.remediation = res.skipped > 0
+          ? `Vendored ${c.key} into the repo (${res.files} files); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
+          : `Vendored ${c.key} into the repo (${res.files} files) — not available on wpackagist/SatisPress.`;
+        adoptedPaths.push(root);
+        applied.push(`adopt:${c.key}`);
+      } catch (e) {
+        c.remediation = `Adoption failed for ${c.key}: ${e.message}`;
+        applied.push(`adopt:${c.key}:failed`);
+      }
+    }
+  }
+
   // Compute outcome last so the cweagans downgrade is reflected.
   const outcome = decideOutcome(classified);
-  return { classified, outcome, applied };
+  return { classified, outcome, applied, adoptedPaths };
 }
 
 /** Pull the most informative line out of composer's error output for a one-line reason. */

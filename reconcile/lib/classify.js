@@ -109,7 +109,8 @@ async function componentVerdict(comp, ctx) {
   }
 
   return { key: comp.slug, category: 'premium-flag', recoverable: false,
-    remediation: `Premium/unknown ${label}${treeVersion ? ` v${treeVersion}` : ''} on server, not on wpackagist or SatisPress. Add to SatisPress or vendor manually.` };
+    root: comp.root, kind: comp.kind,
+    remediation: `Premium/unknown ${label}${treeVersion ? ` v${treeVersion}` : ''} on server, not on wpackagist or SatisPress. Add to SatisPress or vendor into the repo.` };
 }
 
 module.exports = { classify, versionConstraint, isComposerVersion };
