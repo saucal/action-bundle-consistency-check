@@ -6,9 +6,9 @@ const os = require('os');
 const path = require('path');
 const { reconcileRun } = require('../lib/reconcile-run');
 
-function tmpSource() {
+function tmpSource(require = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'src-'));
-  fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({ name: 't/t', require: {} }, null, 4) + '\n');
+  fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({ name: 't/t', require }, null, 4) + '\n');
   return dir;
 }
 
@@ -50,6 +50,9 @@ test('add/bump: recoverable wpackagist add writes require, runs composer update,
   assert.ok(upd, 'an update call was made');
   assert.ok(upd.args.includes('wpackagist-plugin/code-snippets'));
   assert.ok(!upd.args.includes('-W'), 'first update is partial (no -W)');
+  // Install pins the EXACT server version into the lock (not >=latest) via --with.
+  assert.ok(upd.args.includes('--with'), 'uses --with to lock the exact version');
+  assert.ok(upd.args.includes('wpackagist-plugin/code-snippets:3.6.5'), '--with names the server version');
   assert.strictEqual(upd.opts.cwd, sourceDir);
 
   assert.deepStrictEqual(res.applied, ['require:wpackagist-plugin/code-snippets']);
@@ -78,6 +81,43 @@ test('unavailable: composer update fails -> constraint reverted, flagged version
   assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), before);
   assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets:unavailable'), res.applied.join(','));
   assert.strictEqual(res.outcome, 'unrecoverable-only');
+});
+
+test('existing RANGE constraint is NOT bumped; exact server version installed via --with', async () => {
+  const sourceDir = tmpSource({ 'wpackagist-plugin/code-snippets': '>=1.0.0' });
+  const runner = fakeRunner();
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+
+  // composer.json constraint left exactly as-is (not raised to >=3.6.5).
+  const composer = JSON.parse(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'));
+  assert.strictEqual(composer.require['wpackagist-plugin/code-snippets'], '>=1.0.0');
+  // but the lock is pinned to the server version via --with.
+  const upd = runner.calls.find((k) => k.args[0] === 'update' && k.args.includes('wpackagist-plugin/code-snippets'));
+  assert.ok(upd.args.includes('wpackagist-plugin/code-snippets:3.6.5'), '--with pins server version');
+  assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets'));
+});
+
+test('a PINNED constraint that differs from the server is never changed -> flagged pinned-constraint', async () => {
+  const sourceDir = tmpSource({ 'wpackagist-plugin/code-snippets': '3.0.0' });
+  const before = fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8');
+  const runner = fakeRunner();
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.category, 'pinned-constraint');
+  assert.strictEqual(c.recoverable, false);
+  assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), before, 'composer.json untouched');
+  assert.ok(!runner.calls.some((k) => k.args[0] === 'update' && k.args.includes('wpackagist-plugin/code-snippets')), 'no install attempted');
+  assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets:pinned'));
+});
+
+test('a PINNED constraint already equal to the server version is a clean no-op (pinned-ok)', async () => {
+  const sourceDir = tmpSource({ 'wpackagist-plugin/code-snippets': '3.6.5' });
+  const runner = fakeRunner();
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+
+  assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets:pinned-ok'));
+  assert.ok(!runner.calls.some((k) => k.args[0] === 'update' && k.args.includes('wpackagist-plugin/code-snippets')), 'no install attempted');
 });
 
 test('flag-only: sensitive item leaves composer untouched, no runner call, empty applied', async () => {

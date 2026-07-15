@@ -37,6 +37,7 @@ function makeProject(o) {
     'cweagans/composer-patches': '^2.0',
   };
   const seenPkg = new Set();
+  const baseline = {}; // pkg -> first-occurrence version, locked exactly in the built state
 
   function addPathRepo(p, isTheme) {
     const pkgDir = path.join(pkgsRoot, `${p.slug}-${p.version}`);
@@ -83,9 +84,12 @@ function makeProject(o) {
       canonical: false,
     });
 
-    // First occurrence of a pkg pins the root require constraint.
+    // First occurrence of a pkg sets the root require constraint. Default to a `>=` RANGE (as real
+    // Saucal projects do) with the exact version locked separately below; `pin: true` uses an exact
+    // constraint instead (to exercise the "don't touch a deliberate pin" path).
     if (!seenPkg.has(p.pkg)) {
-      require[p.pkg] = p.version;
+      require[p.pkg] = p.pin ? p.version : `>=${p.version}`;
+      baseline[p.pkg] = p.version;
       seenPkg.add(p.pkg);
     }
   }
@@ -146,7 +150,12 @@ function makeProject(o) {
     JSON.stringify(composer, null, 4) + '\n'
   );
 
-  execFileSync('composer', ['install', '--no-interaction', '--no-progress'], {
+  // Lock each package at its baseline (first-occurrence) version while keeping the (possibly
+  // ranged) constraint — mirrors real projects: `>=X` in composer.json, exact X in composer.lock,
+  // newer versions available in the repos. Uses `composer update --with` (the same mechanism the
+  // reconcile uses) so a `>=` constraint doesn't silently grab the latest at build time.
+  const withArgs = Object.entries(baseline).flatMap(([pkg, v]) => ['--with', `${pkg}:${v}`]);
+  execFileSync('composer', ['update', '--no-interaction', '--no-progress', ...withArgs], {
     cwd: dir,
     stdio: 'pipe',
     maxBuffer: 64 * 1024 * 1024,

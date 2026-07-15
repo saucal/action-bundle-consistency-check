@@ -4,7 +4,7 @@ const path = require('path');
 const { parseManifest } = require('./parse-drift');
 const { parseContentDiff, modifiedPaths } = require('./parse-content-diff');
 const { classify, versionConstraint } = require('./classify');
-const { upsertRequire, removeRequire, ensureCweagansSetup, serializeComposer } = require('./composer');
+const { upsertRequire, removeRequire, isPinnedConstraint, ensureCweagansSetup, serializeComposer } = require('./composer');
 const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
 const { adoptComponent } = require('./adopt');
@@ -84,47 +84,61 @@ async function reconcileRun(o) {
     if (upd.code !== 0) applied.push('bootstrap:cweagans:update-failed');
   }
 
-  // Pass 1 — require add/bump (also pins patched-candidate to its target version), applied ONE
-  // package at a time so composer's resolver acts as the availability check. The version is
-  // derived from the server's plugin header; if no published package satisfies `>=<version>`
-  // (e.g. the server runs a dev/unreleased build), composer update fails — we then REVERT the
-  // constraint (never commit an uninstallable composer.json) and flag it as a decision rather
-  // than reporting a false "Applied". Without this, merging the PR would not bring the site
-  // back in sync. ponytail: sequential updates (n small); batch if a repo ever adds dozens.
+  // Pass 1 — reproduce the server's EXACT version without bumping constraints. Install the
+  // server's version into the LOCK via a temporary constraint (`--with <pkg>:<ver>`), leaving
+  // composer.json's range untouched (add only a `>=<server>` floor for a brand-new require). This
+  // makes the build byte-reproduce the server (convergence) instead of jumping to the latest that
+  // satisfies `>=` — the whole point of reconciling. A deliberately-pinned exact constraint is
+  // never changed; it's flagged instead. Applied ONE package at a time so composer's resolver acts
+  // as the availability check; an unsatisfiable target reverts + flags rather than faking success.
+  // ponytail: sequential updates (n small).
   for (const c of classified) {
     if (!c.recoverable || !c.composerPackage || !composer) continue;
-    const constraint = versionConstraint(c.version);
+    const target = c.version; // exact version to lock (server's, or a composer-valid fallback)
     const had = !!(composer.require && Object.prototype.hasOwnProperty.call(composer.require, c.composerPackage));
-    const prev = had ? composer.require[c.composerPackage] : undefined;
+    const existing = had ? composer.require[c.composerPackage] : undefined;
 
-    const r = upsertRequire(composer, c.composerPackage, constraint);
-    composer = r.composer;
-    fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+    // Respect a deliberate pin: never change it. If it already equals the server version there's
+    // nothing to do (it verifies clean); otherwise flag — reconciling would mean changing the pin.
+    if (had && isPinnedConstraint(existing)) {
+      const pinned = existing.trim().replace(/^==\s*/, '');
+      if (!target || pinned === String(target)) { applied.push(`require:${c.composerPackage}:pinned-ok`); continue; }
+      c.recoverable = false;
+      c.category = 'pinned-constraint';
+      c.remediation = `${c.composerPackage} is pinned to \`${existing}\` in composer.json, but the server has v${target}. The pin is intentional — reconcile won't change it. Update the pin manually to adopt the server's version.`;
+      applied.push(`require:${c.composerPackage}:pinned`);
+      continue;
+    }
 
-    if (!o.runner) { if (r.changed) composerChanged = true; continue; }
+    // New require: add a `>=<server>` floor. Existing range: leave it unchanged (do NOT bump).
+    if (!had) {
+      composer = upsertRequire(composer, c.composerPackage, versionConstraint(target)).composer;
+      fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+    }
 
-    // Partial update first: keep every other package at its locked version so a pre-existing
-    // unsatisfiable sibling (e.g. a delisted plugin already in the repo) can't fail THIS plugin's
-    // solve. Escalate to -W only if the plugin genuinely needs its own dependencies co-updated.
-    let upd = await o.runner.composer(['update', c.composerPackage, '--no-progress'], { cwd: o.sourceDir });
+    if (!o.runner) { if (!had) composerChanged = true; continue; }
+
+    // Install the exact server version into the lock, keeping composer.json's constraint. Partial
+    // update first (keep siblings locked so a broken sibling can't fail this solve); escalate to -W
+    // only if the plugin genuinely needs its own deps co-updated.
+    const withArg = target ? ['--with', `${c.composerPackage}:${target}`] : [];
+    let upd = await o.runner.composer(['update', c.composerPackage, ...withArg, '--no-progress'], { cwd: o.sourceDir });
     if (upd.code !== 0) {
-      upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+      upd = await o.runner.composer(['update', c.composerPackage, '-W', ...withArg, '--no-progress'], { cwd: o.sourceDir });
     }
     if (upd.code !== 0) {
-      // Unsatisfiable — restore the prior constraint (or drop the add) so composer.json stays installable.
-      composer = (had ? upsertRequire(composer, c.composerPackage, prev) : removeRequire(composer, c.composerPackage)).composer;
-      fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+      // Unsatisfiable — drop a new-add require so composer.json stays installable (existing range
+      // constraints were never touched, so there's nothing to revert for a bump).
+      if (!had) { composer = removeRequire(composer, c.composerPackage).composer; fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText)); }
       c.recoverable = false;
       c.category = 'version-unavailable';
-      // Surface composer's own reason so the log/PR say WHY (missing version vs. stability vs. a
-      // broken global solve), instead of an opaque "unavailable".
       c.composerOutput = ((upd.stdout || '') + (upd.stderr || '')).trim().slice(-1600);
       const reason = firstComposerError(c.composerOutput);
-      c.remediation = `Server has ${c.key}${c.version ? ` v${c.version}` : ''}, but composer could not install \`${c.composerPackage}:${constraint}\`${reason ? ` — ${reason}` : ''}. Merging would not bring the site in sync; resolve and re-run.`;
+      c.remediation = `Server has ${c.key}${target ? ` v${target}` : ''}, but composer could not install \`${c.composerPackage}\`${target ? ` at v${target}` : ''}${reason ? ` — ${reason}` : ''}. Merging would not bring the site in sync; resolve and re-run.`;
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }
-    if (r.changed) composerChanged = true;
+    if (!had) composerChanged = true;
     applied.push(`require:${c.composerPackage}`);
   }
 

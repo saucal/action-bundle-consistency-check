@@ -1,7 +1,16 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { upsertRequire, ensureCweagansSetup, serializeComposer } = require('../lib/composer');
+const { upsertRequire, ensureCweagansSetup, serializeComposer, isPinnedConstraint } = require('../lib/composer');
+
+test('isPinnedConstraint: exact versions are pins, ranges are not', () => {
+  for (const s of ['1.2.3', '1.2', '==1.2.3', 'v1.2.3', '1.2.3-beta2', 'dev-main']) {
+    assert.strictEqual(isPinnedConstraint(s), true, `pin: ${s}`);
+  }
+  for (const s of ['>=1.2', '^1.2', '~1.2.3', '1.2.*', '>1.0 <2.0', '1.0 || 2.0', '*', '@dev', '', null]) {
+    assert.strictEqual(isPinnedConstraint(s), false, `range: ${s}`);
+  }
+});
 
 test('adds a new package and reports changed', () => {
   const base = { require: { 'php': '>=8.1' } };
