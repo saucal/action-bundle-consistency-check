@@ -19,6 +19,7 @@ const KNOWN = {
   verplug: { source: 'satispress', package: 'saucal/verplug', version: '1.1.0' },
   patchplug: { source: 'satispress', package: 'saucal/patchplug', version: '1.0.0' },
   thmx: { source: 'satispress', package: 'saucal/thmx', version: '1.0.0' },
+  pinplug: { source: 'satispress', package: 'saucal/pinplug', version: '1.1.0' },
 };
 
 const fakeResolvers = {
@@ -119,15 +120,49 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
     runner: makeRunner(),
   });
 
-  assert.match(read(installed), /Version: 1\.1\.0/, 'installed bumped to 1.1.0');
+  assert.match(read(installed), /Version: 1\.1\.0/, 'installed bumped to 1.1.0 (the server version, not >=latest)');
   assert.ok(
     res.applied.includes('patched:verplug:bump-only'),
     `patched-candidate resolved bump-only: ${res.applied}`
   );
   assert.ok(!fs.existsSync(path.join(dir, 'patches', 'verplug.patch')), 'no patch written');
+  // The `>=1.0.0` range constraint is NOT bumped — only the lock moves to the server's version.
+  const cj = JSON.parse(read(path.join(dir, 'composer.json')));
+  assert.strictEqual(cj.require['saucal/verplug'], '>=1.0.0', 'composer.json constraint left unchanged');
   // Verify pass (real composer): the bumped install byte-matches the server's 1.1.0 dir → converges.
   const vp = findByKey(res.classified, 'verplug');
   assert.strictEqual(vp.verified, true, 'bump verifies clean against server');
+});
+
+// --- 2b. pinned constraint (do not touch) -------------------------------
+test('bump: a deliberately-pinned constraint is left untouched and flagged (not bumped)', async () => {
+  const { dir } = makeProject({
+    plugins: [
+      { slug: 'pinplug', pkg: 'saucal/pinplug', version: '1.0.0', body: '// v code\n', pin: true },
+      { slug: 'pinplug', pkg: 'saucal/pinplug', version: '1.1.0', body: '// v code\n' },
+    ],
+  });
+  const composerBefore = read(path.join(dir, 'composer.json'));
+  assert.strictEqual(JSON.parse(composerBefore).require['saucal/pinplug'], '1.0.0', 'starts pinned exact');
+  const installed = path.join(dir, 'plugins/pinplug/pinplug.php');
+  assert.match(read(installed), /Version: 1\.0\.0/);
+
+  const src111 = path.join(dir, 'pkgs/pinplug-1.1.0');
+  const serverDir = stageServer(dir, (sv) => {
+    const dst = path.join(sv, 'plugins/pinplug');
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of fs.readdirSync(src111)) fs.copyFileSync(path.join(src111, f), path.join(dst, f));
+  });
+
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+  const c = findByKey(res.classified, 'pinplug');
+  assert.strictEqual(c.category, 'pinned-constraint');
+  assert.strictEqual(c.recoverable, false);
+  assert.strictEqual(read(path.join(dir, 'composer.json')), composerBefore, 'pinned composer.json untouched');
+  assert.match(read(installed), /Version: 1\.0\.0/, 'still the pinned version — not bumped to the server 1.1.0');
 });
 
 // --- 3. patch -----------------------------------------------------------

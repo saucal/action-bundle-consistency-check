@@ -17,6 +17,19 @@ function upsertRequire(composer, pkg, constraint) {
 }
 
 /**
+ * True when a constraint names a single exact version with no range/wildcard operators — a
+ * deliberate pin the reconcile must not change (e.g. "1.2.3", "==1.2.3", "v1.2.3", "dev-main").
+ * Ranges ("`>=1.2`", "^1.2", "~1.2", "1.2.*", "1.0 - 2.0", "a || b") return false.
+ * @param {string} s
+ * @returns {boolean}
+ */
+function isPinnedConstraint(s) {
+  if (typeof s !== 'string') return false;
+  const t = s.trim().replace(/^==\s*/, '');
+  return t !== '' && !/[<>~^*|@\s]/.test(t);
+}
+
+/**
  * Remove a require entry (used to revert an add whose constraint composer couldn't satisfy).
  * Returns a new object (input untouched).
  * @param {object} composer
@@ -111,4 +124,4 @@ function serializeComposer(obj, originalText) {
   return out;
 }
 
-module.exports = { upsertRequire, removeRequire, ensureCweagansSetup, serializeComposer };
+module.exports = { upsertRequire, removeRequire, isPinnedConstraint, ensureCweagansSetup, serializeComposer };
