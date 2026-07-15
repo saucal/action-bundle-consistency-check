@@ -9,6 +9,7 @@ const { decideOutcome } = require('./outcome');
 const { reconcilePatched } = require('./reconcile-patched');
 const { adoptComponent } = require('./adopt');
 const { isSensitive } = require('./detectors');
+const { generatePatch } = require('./patch-gen');
 
 /**
  * Orchestrator core (no git/gh). Classifies drift and applies recoverable changes to the
@@ -186,9 +187,31 @@ async function reconcileRun(o) {
     }
   }
 
+  // Pass 4 — verify convergence (where do we land?). The consistency check already reverse-synced
+  // the LIVE server into treeRoot (built/), and every applied change is installed/vendored under
+  // sourceDir. Byte-compare each recovered component's reconciled tree against the captured server
+  // state: `verified` means a deploy from this PR reproduces the server for that component;
+  // residual files mean the fix is incomplete (the site would still drift there). This reuses the
+  // server state already captured — no second rsync/SSH or rebuild needed.
+  let verified = 0;
+  let verifiable = 0;
+  for (const c of classified) {
+    if (!c.recoverable || !c.root) continue;
+    const srcDir = path.join(o.sourceDir, c.root);
+    const srvDir = path.join(o.treeRoot, c.root);
+    if (!fs.existsSync(srcDir) || !fs.existsSync(srvDir)) continue; // can't compare locally → leave unknown
+    let residual;
+    try { residual = generatePatch(srcDir, srvDir, c.root); } catch { continue; }
+    verifiable++;
+    c.verified = residual.trim() === '';
+    if (c.verified) verified++;
+    else c.residualFiles = (residual.match(/^diff --git/gm) || []).length;
+  }
+  const verification = { verified, verifiable, residual: verifiable - verified };
+
   // Compute outcome last so the cweagans downgrade is reflected.
   const outcome = decideOutcome(classified);
-  return { classified, outcome, applied, adoptedPaths };
+  return { classified, outcome, applied, adoptedPaths, verification };
 }
 
 /** Pull the most informative line out of composer's error output for a one-line reason. */
