@@ -40,8 +40,6 @@ async function sh(cmd, args, opts = {}) {
   const manifestPath = env('MANIFEST_PATH');
   const diffPath = env('DIFF_PATH');
   const runUrl = env('RUN_URL');
-  const satispressUrl = env('SATISPRESS_URL');
-  const satispressToken = env('SATISPRESS_TOKEN');
   const adopt = /^(1|true)$/i.test(env('ADOPT_NON_COMPOSER'));
   const branch = `reconciliation-${ref}`;
   // Composer SatisPress auth is configured by the action step (composer config --global --auth)
@@ -69,8 +67,11 @@ async function sh(cmd, args, opts = {}) {
   if (checkedOut.code !== 0) { core.setFailed(`git checkout failed:\n${checkedOut.out}`); return; }
 
   // 2. Classify + apply (composer add/bump + patches) via the orchestrator core.
-  const resolvers = makeResolvers(fetch, satispressUrl, satispressToken);
+  // SatisPress resolution goes through composer itself (`composer show`), reusing the SAME
+  // auth.json action-composer-auth already configured earlier in this job — no separate
+  // credential handling for the resolver.
   const runner = makeRunner();
+  const resolvers = makeResolvers({ fetch, runner, cwd });
   let result;
   try {
     result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt });

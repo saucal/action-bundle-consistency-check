@@ -82,11 +82,11 @@ inputs:
     required: false
     default: ''
   satispress-url:
-    description: "SatisPress composer repo base URL, used to resolve premium plugins."
+    description: "Deprecated, no longer read. SatisPress resolution now goes through composer itself (composer show), authenticated via the auth.json action-composer-auth configures upstream in this job. Kept only for backward compatibility with existing callers."
     required: false
     default: 'https://packages.saucal.com'
   satispress-token:
-    description: "SatisPress HTTP Basic auth token (license key) used to resolve premium plugins."
+    description: "Deprecated, no longer read. See satispress-url."
     required: false
     default: ''
   reconcile-adopt-non-composer:
@@ -160,8 +160,6 @@ runs:
         REF: ${{ github.ref_name }}
         SOURCE_DIR: ${{ inputs.source }}
         BUILT_DIR: ${{ inputs.built }}
-        SATISPRESS_URL: ${{ inputs.satispress-url }}
-        SATISPRESS_TOKEN: ${{ inputs.satispress-token }}
         ADOPT_NON_COMPOSER: ${{ inputs.reconcile-adopt-non-composer }}
         MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
