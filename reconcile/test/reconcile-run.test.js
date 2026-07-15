@@ -120,6 +120,29 @@ test('adopt: premium-flag component is vendored into source when the flag is on'
   assert.ok(fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/premiumplug.php')), 'vendored into source');
   assert.deepStrictEqual(res.adoptedPaths, ['plugins/premiumplug']);
   assert.ok(res.applied.includes('adopt:premiumplug'), res.applied.join(','));
+  // Verify pass: the vendored source now byte-matches the captured server state → reproduces it.
+  assert.strictEqual(c.verified, true);
+  assert.deepStrictEqual(res.verification, { verified: 1, verifiable: 1, residual: 0 });
+});
+
+test('verify: adopted-lossy (a non-manifest sensitive file skipped) reports residual — does NOT fully converge', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'premiumplug', 'inc'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'premiumplug', 'premiumplug.php'), '<?php // premium\n');
+  // Credentials file present in the server dir but NOT in the drift manifest: adopt's full-dir
+  // copy hits and skips it (sensitive), so the vendored plugin is missing it → residual.
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'premiumplug', 'inc', 'secret-credentials.php'), '<?php return ["k"=>"v"];\n');
+  const runner = { calls: [], composer(args) { return { code: args[0] === 'show' ? 1 : 0, stdout: '', stderr: '' }; } };
+
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner, adopt: true });
+
+  const c = res.classified.find((x) => x.key === 'premiumplug');
+  assert.strictEqual(c.category, 'adopted-lossy');
+  assert.strictEqual(c.verified, false);
+  assert.ok(c.residualFiles >= 1, `residualFiles: ${c.residualFiles}`);
+  assert.strictEqual(res.verification.residual, 1);
+  assert.ok(!fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/inc/secret-credentials.php')), 'sensitive file not vendored');
 });
 
 test('adopt: off by default -> premium-flag stays flagged, nothing vendored', async () => {

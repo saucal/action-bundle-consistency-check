@@ -125,6 +125,9 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
     `patched-candidate resolved bump-only: ${res.applied}`
   );
   assert.ok(!fs.existsSync(path.join(dir, 'patches', 'verplug.patch')), 'no patch written');
+  // Verify pass (real composer): the bumped install byte-matches the server's 1.1.0 dir → converges.
+  const vp = findByKey(res.classified, 'verplug');
+  assert.strictEqual(vp.verified, true, 'bump verifies clean against server');
 });
 
 // --- 3. patch -----------------------------------------------------------
@@ -451,6 +454,8 @@ test('adopt: plugin on neither wpackagist nor SatisPress -> vendored into source
   assert.ok(fs.existsSync(path.join(dir, 'plugins/premiumx/premiumx.php')), 'vendored main file');
   assert.ok(fs.existsSync(path.join(dir, 'plugins/premiumx/inc/helper.php')), 'vendored nested file');
   assert.ok(res.adoptedPaths.includes('plugins/premiumx'), `adoptedPaths: ${res.adoptedPaths}`);
+  // Verify pass: the vendored copy reproduces the server exactly.
+  assert.strictEqual(c.verified, true, 'adopted plugin verifies clean against server');
 });
 
 // --- 10. bootstrap cweagans on a repo that lacks it ---------------------

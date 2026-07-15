@@ -79,8 +79,20 @@ async function sh(cmd, args, opts = {}) {
     core.setFailed(`reconcile-run failed: ${e.stack || e}`);
     return;
   }
-  const { classified, outcome, applied } = result;
+  const { classified, outcome, applied, verification } = result;
   core.info(`Reconcile outcome: ${outcome} | applied: ${applied.join(', ') || '(none)'}`);
+
+  // Where we land: verified = a deploy from this PR reproduces the server for that component;
+  // residual = still differs after apply. Compared locally against the server state the check
+  // already captured — no second rsync.
+  if (verification && verification.verifiable) {
+    core.info(`Verified ${verification.verified}/${verification.verifiable} recovered components reproduce the server; ${verification.residual} with residual drift.`);
+    for (const c of classified) {
+      if (c.verified === false) {
+        core.warning(`${c.key}: applied, but ${c.residualFiles} file(s) still differ from the server after apply — the fix does not fully converge here.`);
+      }
+    }
+  }
 
   // Surface composer's actual complaint for anything flagged unavailable (why the version
   // couldn't be installed: missing version, stability, or a broken global solve).

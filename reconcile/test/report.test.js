@@ -51,3 +51,20 @@ test('no verify status -> header has no suffix (backward compatible)', () => {
   const body = reportBody([{ key: 'x', category: 'ignorable', recoverable: false, remediation: 'junk' }], { ref: 'develop', runUrl: 'u' });
   assert.match(body, /\*\*Outcome:\*\* ignorable-only$/m);
 });
+
+test('per-item verify tags render and the outcome auto-summarizes convergence', () => {
+  const items = [
+    { key: 'ok', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/ok', remediation: 'add', verified: true },
+    { key: 'part', category: 'adopted', recoverable: true, remediation: 'vendored', verified: false, residualFiles: 3 },
+  ];
+  const body = reportBody(items, { ref: 'main', runUrl: 'u' });
+  assert.match(body, /✅ verified — reproduces the server/);
+  assert.match(body, /⚠️ residual — 3 file\(s\) still differ after apply/);
+  assert.match(body, /verified 1\/2 recovered components reproduce the server — residual drift remains/);
+});
+
+test('all recovered items verified -> outcome says byte-for-byte', () => {
+  const items = [{ key: 'ok', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/ok', remediation: 'add', verified: true }];
+  const body = reportBody(items, { ref: 'main', runUrl: 'u' });
+  assert.match(body, /verified 1\/1 recovered components reproduce the server byte-for-byte/);
+});
