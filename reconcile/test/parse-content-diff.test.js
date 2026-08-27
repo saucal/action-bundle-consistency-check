@@ -6,6 +6,7 @@ const { parseContentDiff, modifiedPaths } = require('../lib/parse-content-diff')
 const SAMPLE = [
   'diff --git --simple D wp-content/cron-debug.log.tick',
   'diff --git --simple A plugins/newplug/new.php',
+  'diff --git --simple WS plugins/crlf-plug/main.php',
   'diff --git a/plugins/tooltips-pro/tooltips.php b/plugins/tooltips-pro/tooltips.php',
   'index b2567a0..1166545 100644',
   '--- a/plugins/tooltips-pro/tooltips.php',
@@ -20,6 +21,7 @@ test('classifies simple A/D entries and standard modified headers', () => {
   assert.deepStrictEqual(items, [
     { path: 'wp-content/cron-debug.log.tick', status: 'D' },
     { path: 'plugins/newplug/new.php', status: 'A' },
+    { path: 'plugins/crlf-plug/main.php', status: 'WS' },
     { path: 'plugins/tooltips-pro/tooltips.php', status: 'M' },
   ]);
 });
@@ -29,10 +31,10 @@ test('modified header without a/ b/ prefixes is still parsed as M', () => {
   assert.deepStrictEqual(items, [{ path: 'plugins/x/main.php', status: 'M' }]);
 });
 
-test('modifiedPaths returns only the M-status paths as a Set', () => {
+test('modifiedPaths returns the M- and WS-status paths as a Set', () => {
   const set = modifiedPaths(parseContentDiff(SAMPLE));
   assert.ok(set instanceof Set);
-  assert.deepStrictEqual([...set], ['plugins/tooltips-pro/tooltips.php']);
+  assert.deepStrictEqual([...set], ['plugins/crlf-plug/main.php', 'plugins/tooltips-pro/tooltips.php']);
 });
 
 test('empty / noise input yields no items', () => {
