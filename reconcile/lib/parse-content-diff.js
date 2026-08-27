@@ -16,15 +16,20 @@ function parseContentDiff(text) {
   return items;
 }
 
+// consistency-diff.sh collapses two kinds of modified file to a bodiless one-liner
+// because printing the body says nothing: 'WS' differs only in whitespace (a CRLF flip
+// from an FTP edit, a reindent), 'LL' has every changed line over the print limit (a
+// minified bundle rebuilt on one side). Both are content modifications exactly like 'M'
+// — the file on the server differs from its published version — so they belong here.
+// A/D/R are absent/renamed, not modified, and stay out.
+const MODIFIED_STATUSES = new Set(['M', 'WS', 'LL']);
+
 /**
- * 'WS' is consistency-diff.sh's collapsed form for a file that differs only in
- * whitespace (a CRLF flip, a reindent). The body is omitted because it is noise, but
- * the file is still modified relative to its published version, so it counts as M.
  * @param {{path:string, status:string}[]} items
  * @returns {Set<string>} paths that are content-modified
  */
 function modifiedPaths(items) {
-  return new Set(items.filter((i) => i.status === 'M' || i.status === 'WS').map((i) => i.path));
+  return new Set(items.filter((i) => MODIFIED_STATUSES.has(i.status)).map((i) => i.path));
 }
 
 module.exports = { parseContentDiff, modifiedPaths };
