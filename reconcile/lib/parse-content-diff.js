@@ -17,11 +17,14 @@ function parseContentDiff(text) {
 }
 
 /**
+ * 'WS' is consistency-diff.sh's collapsed form for a file that differs only in
+ * whitespace (a CRLF flip, a reindent). The body is omitted because it is noise, but
+ * the file is still modified relative to its published version, so it counts as M.
  * @param {{path:string, status:string}[]} items
- * @returns {Set<string>} paths whose status is 'M' (content-modified)
+ * @returns {Set<string>} paths that are content-modified
  */
 function modifiedPaths(items) {
-  return new Set(items.filter((i) => i.status === 'M').map((i) => i.path));
+  return new Set(items.filter((i) => i.status === 'M' || i.status === 'WS').map((i) => i.path));
 }
 
 module.exports = { parseContentDiff, modifiedPaths };
