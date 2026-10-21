@@ -31,20 +31,24 @@ test('no-op when constraint already matches', () => {
   assert.strictEqual(changed, false);
 });
 
-test('ensureCweagansSetup adds require, allow-plugins, and the post-install hook', () => {
+test('ensureCweagansSetup requires saucal/composer-patches and allows both plugins', () => {
   const { composer, changed } = ensureCweagansSetup({ name: 'x/y', require: { php: '>=8.1' } });
   assert.strictEqual(changed, true);
-  assert.strictEqual(composer.require['cweagans/composer-patches'], '>=2.0.0');
+  assert.strictEqual(composer.require['saucal/composer-patches'], '>=1.1.0');
+  assert.strictEqual(composer.require['cweagans/composer-patches'], undefined, 'cweagans comes in as its dependency');
   assert.strictEqual(composer.config['allow-plugins']['cweagans/composer-patches'], true);
-  assert.ok(composer.scripts['post-install-cmd'].some((l) => l.includes('.patches_applied')));
+  assert.strictEqual(composer.config['allow-plugins']['saucal/composer-patches'], true);
+  assert.strictEqual(composer.scripts, undefined, 'no script hook');
 });
 
-test('ensureCweagansSetup preserves an existing post-install-cmd and is idempotent', () => {
-  const first = ensureCweagansSetup({ scripts: { 'post-install-cmd': ['echo hi'] } }).composer;
-  assert.ok(first.scripts['post-install-cmd'].includes('echo hi'));
-  const again = ensureCweagansSetup(first);
-  assert.strictEqual(again.changed, false);
-  assert.strictEqual(again.composer.scripts['post-install-cmd'].length, first.scripts['post-install-cmd'].length);
+test('ensureCweagansSetup drops the old jq hook, keeps other scripts, and is idempotent', () => {
+  const OLD = 'PKGS=$(jq -r \'(.extra.patches // {}) | keys | join(" ")\' composer.json); if [ -n "$PKGS" ]; then HASH=$(jq -r \'._hash\' patches.lock.json 2>/dev/null); if [ -z "$HASH" ] || [ "$(cat .patches_applied 2>/dev/null)" != "$HASH" ]; then echo "Patches hash changed!" && echo "$HASH" > .patches_applied && composer reinstall $PKGS || rm -f .patches_applied; fi; fi';
+  const first = ensureCweagansSetup({ require: { 'cweagans/composer-patches': '^2.0' }, scripts: { 'post-install-cmd': ['echo hi', OLD] } }).composer;
+  assert.deepStrictEqual(first.scripts['post-install-cmd'], ['echo hi']);
+  assert.strictEqual(first.require['cweagans/composer-patches'], '^2.0', 'an existing direct require is left alone');
+  assert.strictEqual(ensureCweagansSetup(first).changed, false);
+  const only = ensureCweagansSetup({ scripts: { 'post-install-cmd': OLD } }).composer;
+  assert.strictEqual(only.scripts, undefined, 'empty scripts block removed');
 });
 
 test('serializeComposer keeps the original repositories order (no integer-key hoisting)', () => {
@@ -70,3 +74,4 @@ test('serializeComposer keeps the original repositories order (no integer-key ho
 test('serializeComposer without original text is plain stringify', () => {
   assert.strictEqual(serializeComposer({ a: 1 }), JSON.stringify({ a: 1 }, null, 4) + '\n');
 });
+

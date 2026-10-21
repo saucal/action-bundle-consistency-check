@@ -89,6 +89,7 @@ test('add: server has an extra plugin -> required + installed', async () => {
 // --- 2. bump ------------------------------------------------------------
 test('bump: clean newer version on server -> bump-only, no patch', async () => {
   const { dir } = makeProject({
+    noCweagans: true, // like most fleet repos: a converging bump must not add the patch setup
     plugins: [
       { slug: 'verplug', pkg: 'saucal/verplug', version: '1.0.0', body: '// v code\n' },
       { slug: 'verplug', pkg: 'saucal/verplug', version: '1.1.0', body: '// v code\n' },
@@ -126,6 +127,9 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
     `patched-candidate resolved bump-only: ${res.applied}`
   );
   assert.ok(!fs.existsSync(path.join(dir, 'patches', 'verplug.patch')), 'no patch written');
+  // Patches are a separate pass: a bump that converges must not drag in the patch setup.
+  assert.ok(!res.applied.includes('bootstrap:cweagans'), `no cweagans bootstrap for bump-only: ${res.applied}`);
+  assert.ok(!JSON.parse(read(path.join(dir, 'composer.json'))).require['cweagans/composer-patches'], 'cweagans not required');
   // The `>=1.0.0` range constraint is NOT bumped — only the lock moves to the server's version.
   const cj = JSON.parse(read(path.join(dir, 'composer.json')));
   assert.strictEqual(cj.require['saucal/verplug'], '>=1.0.0', 'composer.json constraint left unchanged');
@@ -135,7 +139,7 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
 });
 
 // --- 2b. pinned constraint (do not touch) -------------------------------
-test('bump: a deliberately-pinned constraint is left untouched and flagged (not bumped)', async () => {
+test('bump: a pin the server moved past is lifted to >= the server version and installed there', async () => {
   const { dir } = makeProject({
     plugins: [
       { slug: 'pinplug', pkg: 'saucal/pinplug', version: '1.0.0', body: '// v code\n', pin: true },
@@ -159,10 +163,11 @@ test('bump: a deliberately-pinned constraint is left untouched and flagged (not 
   const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
 
   const c = findByKey(res.classified, 'pinplug');
-  assert.strictEqual(c.category, 'pinned-constraint');
-  assert.strictEqual(c.recoverable, false);
-  assert.strictEqual(read(path.join(dir, 'composer.json')), composerBefore, 'pinned composer.json untouched');
-  assert.match(read(installed), /Version: 1\.0\.0/, 'still the pinned version — not bumped to the server 1.1.0');
+  assert.strictEqual(c.recoverable, true);
+  assert.deepStrictEqual(c.constraintRelaxed, { from: '1.0.0', to: '>=1.1.0' });
+  assert.strictEqual(JSON.parse(read(path.join(dir, 'composer.json'))).require['saucal/pinplug'], '>=1.1.0', 'pin lifted');
+  assert.match(read(installed), /Version: 1\.1\.0/, 'installed at the server version');
+  assert.strictEqual(JSON.parse(read(path.join(dir, 'composer.lock'))).packages.find((p) => p.name === 'saucal/pinplug').version, '1.1.0');
 });
 
 // --- 3. patch -----------------------------------------------------------
@@ -380,13 +385,13 @@ test('mixed: add + patch + junk -> all categories, outcome reconciled', async ()
   assert.strictEqual(r.code, 0, r.stderr);
 
   const serverDir = stageServer(dir, (sv) => {
-    // add: extra newplug dir
+    // add: newplug exactly as published (byte-identical to the package), so it is a clean add.
+    // A server copy that differs from the published one would rightly go to the patch pass.
     const np = path.join(sv, 'plugins/newplug');
+    fs.rmSync(np, { recursive: true, force: true });
     fs.mkdirSync(np, { recursive: true });
-    fs.writeFileSync(
-      path.join(np, 'newplug.php'),
-      '<?php\n/**\n * Plugin Name: newplug\n * Version: 1.0.0\n */\n// new plugin\n'
-    );
+    const pub = path.join(dir, 'pkgs/newplug-1.0.0');
+    for (const f of fs.readdirSync(pub)) fs.copyFileSync(path.join(pub, f), path.join(np, f));
     // patch: edit patchplug
     const pf = path.join(sv, 'plugins/patchplug/patchplug.php');
     fs.writeFileSync(pf, read(pf).replace('// app code', '// app code DRIFTED'));
@@ -519,8 +524,45 @@ test('bootstrap: repo without cweagans gets it installed + the plugin patched', 
   });
 
   const after = JSON.parse(read(path.join(dir, 'composer.json')));
-  assert.strictEqual(after.require['cweagans/composer-patches'], '>=2.0.0', 'cweagans added to composer.json');
+  assert.strictEqual(after.require['saucal/composer-patches'], '>=1.1.0', 'saucal/composer-patches added to composer.json');
+  const locked = JSON.parse(read(path.join(dir, 'composer.lock'))).packages.map((p) => p.name);
+  assert.ok(locked.includes('cweagans/composer-patches'), 'cweagans locked as its dependency');
   assert.ok(res.applied.includes('bootstrap:cweagans'), `applied: ${res.applied}`);
   assert.match(read(installed), /DRIFTED/, 'plugin patched on disk after bootstrap');
   assert.ok(fs.existsSync(path.join(dir, 'patches/patchplug.patch')), 'patch written');
+});
+
+// --- update + residual edits (e.g. repo on product-bundles 8.5.9, server on 9.1.0 + FTP edits) ---
+test('update + patch: newer version on server with edits -> lock moves, residual becomes a patch', async () => {
+  const { dir } = makeProject({
+    noCweagans: true,
+    plugins: [
+      { slug: 'verplug', pkg: 'saucal/verplug', version: '1.0.0', body: '// v code\n' },
+      { slug: 'verplug', pkg: 'saucal/verplug', version: '1.1.0', body: '// v code\n' },
+    ],
+  });
+  // Server: the published 1.1.0, then an edit on top; one file also chmod'ed (not drift).
+  const pub = path.join(dir, 'pkgs/verplug-1.1.0');
+  const serverDir = stageServer(dir, (sv) => {
+    const dst = path.join(sv, 'plugins/verplug');
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of fs.readdirSync(pub)) fs.copyFileSync(path.join(pub, f), path.join(dst, f));
+    const main = path.join(dst, 'verplug.php');
+    fs.writeFileSync(main, read(main).replace('// v code', '// v code + hotfix on production'));
+    fs.chmodSync(path.join(dst, 'composer.json'), 0o755);
+  });
+
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+  const lock = JSON.parse(read(path.join(dir, 'composer.lock')));
+  assert.strictEqual(lock.packages.find((p) => p.name === 'saucal/verplug').version, '1.1.0', 'lock follows the server version');
+  assert.ok(res.applied.includes('patched:verplug:patched'), res.applied.join(','));
+  assert.ok(res.applied.includes('bootstrap:cweagans'), 'patch tooling added because a real patch exists');
+  const patch = read(path.join(dir, 'patches/verplug.patch'));
+  assert.match(patch, /\+.*hotfix on production/);
+  assert.doesNotMatch(patch, /composer\.json|mode/, 'the chmod-only file is not in the patch');
+  assert.match(read(path.join(dir, 'plugins/verplug/verplug.php')), /hotfix on production/, 'patch applied on install');
+  assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
 });

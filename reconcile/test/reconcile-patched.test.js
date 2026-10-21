@@ -101,3 +101,14 @@ test('reconcilePatched: server == pristine -> action bump-only, no patch, no rel
   assert.ok(!runner.calls.some((c) => c.startsWith('patches-relock')), 'no relock');
   assert.ok(!runner.calls.some((c) => c.startsWith('patches-repatch')), 'no repatch');
 });
+
+test('reconcilePatched: header versions differ after the pristine reinstall -> no patch across versions', async () => {
+  const projectDir = scaffoldProject();
+  const serverDir = mkdir('server-');
+  fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), "<?php\n/* Plugin Name: Fake\n * Version: 1.0.1 */\n// edited\n");
+  const runner = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: { 'fakeplug.php': "<?php\n/* Plugin Name: Fake\n * Version: 1.0.0 */\n" } });
+  const res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, runner });
+  assert.strictEqual(res.action, 'version-mismatch');
+  assert.deepStrictEqual([res.installed, res.server], ['1.0.0', '1.0.1']);
+  assert.ok(!fs.existsSync(path.join(projectDir, 'patches', 'fakeplug.patch')), 'no patch written');
+});

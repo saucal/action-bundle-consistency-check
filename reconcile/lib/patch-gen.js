@@ -5,7 +5,7 @@ const path = require('path');
 /**
  * Produce a unified diff transforming pristineDir -> serverDir, with paths rooted at
  * pluginRelRoot (e.g. "plugins/<slug>") so the patch applies with cweagans depth: 2.
- * Returns '' when the directories are identical.
+ * Returns '' when the directories are identical, or differ only in file modes.
  * @param {string} pristineDir
  * @param {string} serverDir
  * @param {string} pluginRelRoot
@@ -14,12 +14,19 @@ const path = require('path');
 function generatePatch(pristineDir, serverDir, pluginRelRoot) {
   let raw;
   try {
-    raw = execFileSync('git', ['diff', '--no-index', '--no-prefix', '--', pristineDir, serverDir], { encoding: 'utf8' });
+    // quotePath=false: non-ASCII names stay readable (quoted names would hide their real extension).
+    raw = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--no-index', '--no-prefix', '--', pristineDir, serverDir], { encoding: 'utf8' });
   } catch (e) {
     // git diff --no-index exits 1 when differences exist; its diff is on stdout.
     raw = e.stdout ? e.stdout.toString() : '';
     if (!raw) throw e;
   }
+  // File modes are not drift (FTP clients and hosts flip them freely, and a mode-only patch is
+  // useless to cweagans): drop mode lines, then any file left with no content change at all.
+  raw = raw.split(/^(?=diff --git )/m)
+    .map((chunk) => chunk.replace(/^(?:old|new) mode \d+\n/gm, ''))
+    .filter((chunk) => !/^diff --git /.test(chunk) || /^(?:@@ |Binary files |GIT binary patch|new file mode|deleted file mode|similarity index)/m.test(chunk))
+    .join('');
   if (!raw.trim()) return '';
 
   const reroot = (p) => {
@@ -36,13 +43,11 @@ function generatePatch(pristineDir, serverDir, pluginRelRoot) {
     return p; // leaves /dev/null and anything unexpected untouched
   };
 
-  return raw.split('\n').map((line) => {
-    let m = line.match(/^diff --git (\S+) (\S+)$/);
-    if (m) return `diff --git ${reroot(m[1])} ${reroot(m[2])}`;
-    m = line.match(/^(---|\+\+\+) (\S+)(.*)$/);
-    if (m) return `${m[1]} ${reroot(m[2])}${m[3]}`;
-    return line;
-  }).join('\n');
+  // Header lines: swap the two temp roots for the component root by prefix, not by splitting on
+  // whitespace, so names with spaces keep their full path.
+  const bases = [pristineDir, serverDir].flatMap((b) => [b.replace(/^\/+/, '/'), b.replace(/^\/+/, '')]);
+  const rerootLine = (line) => bases.reduce((l, b) => l.split(`${b}/`).join(`${pluginRelRoot}/`), line);
+  return raw.split('\n').map((line) => (/^(diff --git |--- |\+\+\+ )/.test(line) ? rerootLine(line) : line)).join('\n');
 }
 
 /**

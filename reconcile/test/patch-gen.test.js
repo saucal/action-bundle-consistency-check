@@ -43,3 +43,18 @@ test('upsertExtraPatches is a no-op when the same entry already present', () => 
   const { changed } = upsertExtraPatches(base, 'saucal/p', entry);
   assert.strictEqual(changed, false);
 });
+
+test('generatePatch ignores file-mode-only differences (a chmod is not drift)', () => {
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-a-'));
+  const b = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-b-'));
+  for (const d of [a, b]) { fs.writeFileSync(path.join(d, 'x.php'), '<?php // same\n'); fs.writeFileSync(path.join(d, 'y.php'), '<?php // v1\n'); }
+  fs.chmodSync(path.join(b, 'x.php'), 0o755);
+  assert.strictEqual(generatePatch(a, b, 'plugins/p'), '', 'mode-only -> no patch');
+
+  fs.writeFileSync(path.join(b, 'y.php'), '<?php // v2\n');
+  fs.chmodSync(path.join(b, 'y.php'), 0o755);
+  const patch = generatePatch(a, b, 'plugins/p');
+  assert.match(patch, /\+<\?php \/\/ v2/);
+  assert.doesNotMatch(patch, /x\.php/, 'the chmod-only file is dropped');
+  assert.doesNotMatch(patch, /^(?:old|new) mode/m, 'no mode lines (cweagans/patch would choke or chmod)');
+});

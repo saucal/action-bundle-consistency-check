@@ -1,0 +1,17 @@
+name: Filesystem Consistency check
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        default: ''
+        required: false
+  schedule:
+    - cron: '0 0,12 * * *' # Run at 0:00 & 12:00 (UTC) every day.
+
+jobs:
+  check:
+    name: Check
+    uses: saucal/action-maintenance/.github/workflows/consistency-check.yml@v3
+    with:
+      payload: ${{ inputs.payload || '' }}
+    secrets: inherit
