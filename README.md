@@ -180,3 +180,8 @@ Outputs (`reconcile-head-sha`, `-build-sha`, `-base-sha`, `-pr`, `-auto-merge`, 
 `-suspicious`) drive the workflow's verify and merge jobs; see `action.yml`.
 
 The end-to-end harness lives in [`e2e/`](e2e/README.md).
+
+> **Structure note:** reconcile (`reconcile/`, ~2k lines of Node) lives in this bundle for now. Bundles
+> are meant to be thin composites over real actions (e.g. `action-bundle-push-to-ssh` over
+> `action-deploy-ssh`), so it may move to its own action (e.g. `saucal/action-consistency-check`) that
+> this bundle calls with the same inputs and outputs.
