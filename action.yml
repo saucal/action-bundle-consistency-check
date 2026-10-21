@@ -89,6 +89,10 @@ inputs:
     description: "Deprecated, no longer read. See satispress-url."
     required: false
     default: ''
+  reconcile-merge:
+    description: "'0' when self-heal PRs are merged by hand (SAUCAL_CONSISTENCY_RECONCILE_MERGE=0): one PR carries everything, instead of merging the part that needs no review and deferring the rest."
+    required: false
+    default: '1'
   reconcile-adopt-non-composer:
     description: "Allow copying non-composer plugin/theme files into source (off by default)."
     required: false
@@ -212,6 +216,7 @@ runs:
         SOURCE_DIR: ${{ inputs.source }}
         BUILT_DIR: ${{ inputs.built }}
         ADOPT_NON_COMPOSER: ${{ inputs.reconcile-adopt-non-composer }}
+        RECONCILE_MERGE: ${{ inputs.reconcile-merge }}
         MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
         RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

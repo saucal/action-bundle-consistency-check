@@ -229,6 +229,12 @@ async function reconcileRun(o) {
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }
+    // Say what was actually done: the classify-time text predates the solve.
+    if (target) {
+      c.remediation = !had ? `Added \`${c.composerPackage}:${versionConstraint(target)}\` and locked at the server's v${target}.`
+        : lockedBefore[c.composerPackage] === String(target) ? `${c.composerPackage}: already locked at the server's v${target}; nothing to change.`
+        : `${c.composerPackage}: locked at the server's v${target} (constraint \`${existing}\` unchanged).`;
+    }
     applied.push(`require:${c.composerPackage}`);
   }
 
@@ -290,6 +296,12 @@ async function reconcileRun(o) {
       c.category = 'patch-version-mismatch';
       c.recoverable = false;
       c.remediation = `${c.key}: composer installs v${res.installed}, but the server's copy says v${res.server}. A patch only describes edits on top of one version — review manually.`;
+      continue;
+    }
+    if (res.action === 'bump-only') {
+      // The published release reproduces the server: a plain version move, not a patch.
+      c.category = String(c.composerPackage).startsWith('wpackagist-') ? `wpackagist-${c.kind || 'plugin'}` : 'satispress';
+      c.remediation = `${c.composerPackage}: locked at the server's v${c.version || '?'}; its files match the published release, so no patch is needed.`;
       continue;
     }
     if (!res.patchFile) continue;

@@ -133,6 +133,10 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
   // The `>=1.0.0` range constraint is NOT bumped — only the lock moves to the server's version.
   const cj = JSON.parse(read(path.join(dir, 'composer.json')));
   assert.strictEqual(cj.require['saucal/verplug'], '>=1.0.0', 'composer.json constraint left unchanged');
+  // The PR description says what happened: a version move, not a patch.
+  const vc = res.classified.find((c) => c.key === 'verplug');
+  assert.strictEqual(vc.category, 'satispress', 'bump-only is reported as a version move');
+  assert.match(vc.remediation, /locked at the server's v1\.1\.0; .*no patch is needed/);
   // Verify pass (real composer): the bumped install byte-matches the server's 1.1.0 dir → converges.
   const vp = findByKey(res.classified, 'verplug');
   assert.strictEqual(vp.verified, true, 'bump verifies clean against server');
