@@ -1,0 +1,25 @@
+name: Deploy
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - preprod
+  workflow_dispatch:
+    inputs:
+      disable-consistency-check:
+        default: false
+        type: boolean
+        description: Disable consistency check
+      payload:
+        default: ''
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy 
+    uses: saucal/action-maintenance/.github/workflows/deployment.yml@v3
+    with:
+      disable-consistency-check: ${{ inputs.disable-consistency-check || false }}
+      payload: ${{ inputs.payload || '' }}
+    secrets: inherit

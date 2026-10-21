@@ -170,3 +170,48 @@ test('a real secrets file directly in a component (not vendor/) still flags sens
   assert.strictEqual(c.category, 'sensitive');
   assert.strictEqual(c.recoverable, false);
 });
+
+// --- code committed to the repo (class 2b) -------------------------------------------------
+const tracked = (prefixes) => (p) => prefixes.some((t) => p === t || p.startsWith(t + '/') || t.startsWith(p + '/'));
+
+test('tracked: a committed plugin is never resolved via a registry, even if its slug is public', async () => {
+  const out = await classify([{ path: 'plugins/code-snippets/code-snippets.php', side: 'build-only' }],
+    { resolvers, treeRoot: '/nonexistent', isTracked: tracked(['plugins/code-snippets/code-snippets.php']) });
+  const c = findKey(out, 'code-snippets');
+  assert.strictEqual(c.category, 'tracked');
+  assert.strictEqual(c.recoverable, true);
+  assert.strictEqual(c.composerPackage, undefined);
+  assert.strictEqual(c.root, 'plugins/code-snippets');
+  assert.deepStrictEqual(c.paths, ['plugins/code-snippets/code-snippets.php']);
+});
+
+test('tracked: a loose file in a tracked directory (client-mu-plugins, acf-json) is tracked', async () => {
+  const out = await classify([{ path: 'client-mu-plugins/site.php', side: 'build-only' }, { path: 'acf-json/group_1.json', side: 'remote-only' }],
+    { resolvers, treeRoot: '/nonexistent', isTracked: tracked(['client-mu-plugins/site.php', 'acf-json/group_0.json']) });
+  assert.strictEqual(findKey(out, 'client-mu-plugins/site.php').category, 'tracked');
+  assert.strictEqual(findKey(out, 'acf-json/group_1.json').category, 'tracked', 'new file in a tracked dir');
+});
+
+test('tracked: untracked paths classify as before', async () => {
+  const out = await classify([{ path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' }],
+    { resolvers, treeRoot: '/nonexistent', isTracked: tracked(['plugins/custom-plugin/custom-plugin.php']) });
+  assert.strictEqual(findKey(out, 'code-snippets').category, 'wpackagist-plugin');
+});
+
+// --- plugin removed on the server ----------------------------------------------------------
+test('removed: a plugin the server no longer has is a removal, never a registry bump', async () => {
+  const out = await classify([
+    { path: 'plugins/code-snippets/code-snippets.php', side: 'build-only' },
+    { path: 'plugins/code-snippets/readme.txt', side: 'build-only' },
+  ], { resolvers, treeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'tree-')), requires: { 'wpackagist-plugin/code-snippets': '>=3.0' } });
+  const c = findKey(out, 'code-snippets');
+  assert.strictEqual(c.category, 'removed');
+  assert.strictEqual(c.recoverable, true);
+  assert.strictEqual(c.composerPackage, 'wpackagist-plugin/code-snippets', 'the require that installs it');
+});
+
+test('removed: no require installs it -> needs a human (not a source change we can make)', async () => {
+  const out = await classify([{ path: 'plugins/ghost/ghost.php', side: 'build-only' }],
+    { resolvers, treeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'tree-')), requires: {} });
+  assert.strictEqual(findKey(out, 'ghost').category, 'needs-redeploy');
+});

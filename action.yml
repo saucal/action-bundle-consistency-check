@@ -93,6 +93,45 @@ inputs:
     description: "Allow copying non-composer plugin/theme files into source (off by default)."
     required: false
     default: 'false'
+  sapp-server:
+    description: "ServiceApp host, for the known-vulnerability check (POST /wp-json/serviceapp/v1/vulns/match)."
+    required: false
+    default: 'maintenance.saucal.com'
+  sapp-vulns-key:
+    description: "ServiceApp API key with the vulns:match scope (preferred: least privilege)."
+    required: false
+    default: ''
+  sapp-app-user:
+    description: "ServiceApp app-password user, used for the vulnerability check when no vulns key is given."
+    required: false
+    default: ''
+  sapp-app-pass:
+    description: "ServiceApp app password (see sapp-app-user)."
+    required: false
+    default: ''
+
+outputs:
+  reconcile-head-sha:
+    description: "Commit to verify/merge: the reconciliation PR head, or the checked branch itself when source already carries every fix. Empty when there is nothing to heal."
+    value: ${{ steps.reconcile.outputs.head-sha }}
+  reconcile-build-sha:
+    description: "With commits not deployed yet: the heal built on the last deployed commit — what verify checks and the built repo gets. Empty otherwise."
+    value: ${{ steps.reconcile.outputs.build-sha }}
+  reconcile-base-sha:
+    description: "Tip of the checked branch the reconciliation was cut from (merge only while it is still there)."
+    value: ${{ steps.reconcile.outputs.base-sha }}
+  reconcile-pr:
+    description: "Reconciliation PR number."
+    value: ${{ steps.reconcile.outputs.pr }}
+  reconcile-auto-merge:
+    description: "'true' when the heal needs no judgement: version moves of existing requires, core, and patches / committed-code copies whose delta raised no signal at all."
+    value: ${{ steps.reconcile.outputs.auto-merge }}
+  reconcile-pending-paths:
+    description: "Newline-separated anchored paths the self-heal checks must not count this time (deferred, flagged or junk drift)."
+    value: ${{ steps.reconcile.outputs.pending-paths }}
+  reconcile-suspicious:
+    description: "'true' when server-derived content carries signals of compromised code — never merge, alert a human."
+    value: ${{ steps.reconcile.outputs.suspicious }}
 
 runs:
   using: "composite"
@@ -143,15 +182,27 @@ runs:
         name: ${{ steps.artifact-meta.outputs.prefix }}-consistency-diffs
         path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
 
+    # Fixed some other way (a deploy, a manual sync): an open reconciliation PR is stale.
+    - name: Close a stale reconciliation PR
+      if: ${{ success() && inputs.reconcile == '1' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        REF: ${{ github.ref_name }}
+        CLEANUP_ONLY: '1'
+      run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
+
     - name: Setup PHP + Composer for reconcile
       if: ${{ failure() && inputs.reconcile == '1' }}
       uses: shivammathur/setup-php@v2
       with:
-        php-version: '8.2'
+        php-version: '8.3'  # preinstalled on ubuntu-latest (24.04): no install
         tools: composer
         coverage: none
 
     - name: Reconcile drift
+      id: reconcile
       if: ${{ failure() && inputs.reconcile == '1' }}
       shell: bash
       env:
@@ -164,10 +215,30 @@ runs:
         MANIFEST_PATH: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         DIFF_PATH: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
         RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        SAPP_SERVER: ${{ inputs.sapp-server }}
+        SAPP_VULNS_KEY: ${{ inputs.sapp-vulns-key }}
+        SAPP_APP_USER: ${{ inputs.sapp-app-user }}
+        SAPP_APP_PASS: ${{ inputs.sapp-app-pass }}
       # Composer SatisPress auth is configured upstream by action-prepare-composer (run via
       # action-bundle-prepare earlier in this same job), which writes source/auth.json. Every
       # composer call the reconcile makes runs in source/ and reads it — no auth setup here.
       run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
+
+    - name: Signal possible compromise to slack
+      if: ${{ failure() && steps.reconcile.outputs.suspicious == 'true' }}
+      uses: saucal/action-slack-notification@v1
+      with:
+        token: ${{ inputs.slack-token }}
+        channel: ${{ inputs.slack-channel }}
+        commit-repo: ${{ github.repository }}
+        commit-branch: ${{ github.ref_name }}
+        commit-author: ${{ github.triggering_actor }}
+        heading: "Possible compromised code on the server"
+        action-url: "${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.reconcile.outputs.pr }}"
+        force: true
+        final-status: failure
+        commit-message: |
+          :rotating_light: @here Server drift on ${{ github.ref_name }} carries signals of compromised code: ${{ steps.reconcile.outputs.security-summary }}. Self-heal will NOT merge; review the reconciliation PR and the server as a possible incident.
 
     - name: Signal Failure to slack
       if: ${{ failure() }}

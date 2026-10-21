@@ -16,12 +16,12 @@ test('flags remote-only ("deleting") vs build-only paths', () => {
 });
 
 test('drops directories, header comments, and rsync noise', () => {
-  const items = parseManifest(fx('talkbox-syncplan.txt'));
+  const items = parseManifest(fx('drift-syncplan.txt'));
   assert.deepStrictEqual(items, [{ path: 'wp-content/cron-debug.log.tick', side: 'remote-only' }]);
 });
 
-test('phlearn: ignores "cannot delete" noise and trailing-slash dirs', () => {
-  const items = parseManifest(fx('phlearn-manifest.txt'));
+test('small manifest: ignores "cannot delete" noise and trailing-slash dirs', () => {
+  const items = parseManifest(fx('drift-manifest-small.txt'));
   assert.deepStrictEqual(items, [
     { path: 'plugins/official-facebook-pixel/facebook-commerce.php', side: 'remote-only' },
   ]);

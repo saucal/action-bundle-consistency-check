@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const { isCompiledAsset, isSensitive, isIgnorable, isVendorPath, componentOf } = require('./detectors');
 const { pluginVersion, themeVersion } = require('./extract-version');
@@ -17,7 +18,9 @@ function isComposerVersion(v) {
 
 /**
  * @param {import('./parse-drift').DriftItem[]} items
- * @param {{resolvers:{wpackagist:Function,satispress:Function}, treeRoot:string}} ctx
+ * @param {{resolvers:{wpackagist:Function,satispress:Function}, treeRoot:string, isTracked?:(p:string)=>boolean}} ctx
+ *   isTracked: true for a file git tracks in source, or a directory holding tracked files
+ *   requires: composer.json's require map (to find the package behind a removed plugin)
  * @returns {Promise<Classified[]>}
  */
 async function classify(items, ctx) {
@@ -35,20 +38,17 @@ async function classify(items, ctx) {
   }
 
   const out = [];
-  for (const it of loose) out.push(looseVerdict(it));
-  for (const comp of components.values()) out.push(await componentVerdict(comp, ctx));
+  const isTracked = ctx.isTracked || (() => false);
+  for (const it of loose) out.push(looseVerdict(it, isTracked));
+  for (const comp of components.values()) out.push(...[].concat(await componentVerdict(comp, ctx, isTracked)));
   return out;
 }
 
-function looseVerdict(it) {
+function looseVerdict(it, isTracked) {
   const p = it.path;
   if (WP_CORE_RE.test(p)) {
     return { key: p, category: 'wp-core', recoverable: true,
       remediation: `WordPress core file changed on server (${p}). Bump the core version via prepare-composer.` };
-  }
-  if (it.side === 'build-only') {
-    return { key: p, category: 'needs-redeploy', recoverable: false,
-      remediation: `In build but missing/changed on server (${p}). Redeploy required; not a source change.` };
   }
   if (isSensitive(p)) {
     return { key: p, category: 'sensitive', recoverable: false,
@@ -58,6 +58,13 @@ function looseVerdict(it) {
     return { key: p, category: 'ignorable', recoverable: false,
       remediation: `Runtime/junk file (${p}). Add to SSH_IGNORE_LIST / SSH_IGNORE_LIST_EXTRA.` };
   }
+  // Code the repo commits (client-mu-plugins, acf-json, ...): the server's version is the fix.
+  const dir = path.posix.dirname(p);
+  if (isTracked(p) || (dir !== '.' && isTracked(dir))) return trackedVerdict(p, null, [p]);
+  if (it.side === 'build-only') {
+    return { key: p, category: 'needs-redeploy', recoverable: false,
+      remediation: `In build but missing/changed on server (${p}). Redeploy required; not a source change.` };
+  }
   if (isCompiledAsset(p)) {
     return { key: p, category: 'compiled-asset', recoverable: false,
       remediation: `Compiled asset changed on server with no source mapping (${p}). Unrecoverable.` };
@@ -66,7 +73,14 @@ function looseVerdict(it) {
     remediation: `Unclassified drift (${p}). Review manually.` };
 }
 
-async function componentVerdict(comp, ctx) {
+/** Committed code: copy the server's version of these paths (deletions included) into source. */
+function trackedVerdict(key, comp, paths) {
+  return { key, category: 'tracked', recoverable: true, paths,
+    ...(comp ? { root: comp.root, kind: comp.kind } : {}),
+    remediation: `${comp ? `${comp.kind} ${comp.slug}` : key} is committed to the repo; taking the server's version of ${paths.length} file(s).` };
+}
+
+async function componentVerdict(comp, ctx, isTracked) {
   const { resolvers, treeRoot, modifiedPaths = new Set() } = ctx;
   const label = `${comp.kind} ${comp.slug}`;
 
@@ -75,7 +89,29 @@ async function componentVerdict(comp, ctx) {
       remediation: `All drift in ${label} is runtime/junk. Add to SSH_IGNORE_LIST.` };
   }
 
+  // Committed to the repo: never look it up in a registry (a public slug collision would pull a
+  // stranger's package). Sensitive files are never copied; they are flagged on their own.
+  if (isTracked(comp.root)) {
+    const keep = comp.paths.filter((it) => !isIgnorable(it.path) && !isSensitive(it.path)).map((it) => it.path);
+    const flagged = comp.paths.filter((it) => isSensitive(it.path)).map((it) => ({ key: it.path, category: 'sensitive', recoverable: false,
+      remediation: `Sensitive file in committed ${label} changed on server (${it.path}). Review manually; never auto-commit.` }));
+    return keep.length ? [trackedVerdict(comp.slug, comp, keep), ...flagged] : flagged;
+  }
+
   const dir = path.join(treeRoot, comp.root);
+
+  // Gone from the server (only build-side paths, no server copy at all): remove the require that
+  // installs it. Resolving it instead would "bump" a deleted plugin to the latest release.
+  if (treeRoot && !fs.existsSync(dir) && comp.paths.every((it) => it.side === 'build-only')) {
+    const pkg = Object.keys(ctx.requires || {}).find((n) => n.split('/')[1] === comp.slug);
+    if (pkg) {
+      return { key: comp.slug, category: 'removed', recoverable: true, composerPackage: pkg, root: comp.root, kind: comp.kind,
+        remediation: `${label} is no longer on the server: removing \`${pkg}\` from composer.json.` };
+    }
+    return { key: comp.slug, category: 'needs-redeploy', recoverable: false,
+      remediation: `${label} is in the build but not on the server, and no composer require installs it. Redeploy, or remove it from the repo.` };
+  }
+
   const hdr = comp.kind === 'theme' ? themeVersion(dir) : pluginVersion(dir);
   const treeVersion = hdr && hdr.version;
 

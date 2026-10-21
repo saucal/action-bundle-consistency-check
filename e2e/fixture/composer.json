@@ -1,0 +1,43 @@
+{
+    "name": "saucal/ci-test-selfheal",
+    "description": "Self-heal e2e fixture",
+    "type": "wordpress-plugin",
+    "license": "proprietary",
+    "repositories": {
+        "satispress": {
+            "type": "composer",
+            "url": "https://packages.saucal.com/satispress/"
+        },
+        "0": {
+            "type": "composer",
+            "url": "https://wpackagist.org",
+            "only": [
+                "wpackagist-plugin/*",
+                "wpackagist-theme/*"
+            ]
+        }
+    },
+    "extra": {
+        "installer-paths": {
+            "plugins/{$name}/": [
+                "type:wordpress-plugin"
+            ],
+            "themes/{$name}/": [
+                "type:wordpress-theme"
+            ]
+        },
+        "wordpress-core": "6.9.1"
+    },
+    "config": {
+        "allow-plugins": {
+            "composer/installers": true
+        }
+    },
+    "require": {
+        "wpackagist-plugin/eps-301-redirects": ">=2.72",
+        "wpackagist-plugin/wordpress-importer": "0.9.5",
+        "wpackagist-plugin/duplicate-post": ">=4.5",
+        "wpackagist-theme/storefront": ">=4.2.0",
+        "saucal/serviceapp-client": ">=2.3.0"
+    }
+}
