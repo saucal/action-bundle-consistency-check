@@ -116,6 +116,9 @@ async function stageOutputs(cwd, result, isTracked) {
   return (await sh('git', ['diff', '--cached', '--name-only'], { cwd })).out.split('\n').filter(Boolean);
 }
 
+/** Both runs scan the same server files: list each finding once. */
+const uniqHits = (hits) => [...new Map(hits.map((h) => [JSON.stringify(h), h])).values()];
+
 /** A git step the rest depends on: throw (fail closed) instead of carrying on with the wrong tree. */
 async function must(args, cwd) {
   const r = await sh('git', args, { cwd });
@@ -215,7 +218,7 @@ async function closeStale(repo, branch, why) {
       core.info(`Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`);
       await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
       // -x within these paths only: adopted dirs are usually gitignored (plugins/).
-      await must(['clean', '-fdqx', '--', 'patches', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
+      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
     }
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
@@ -234,7 +237,7 @@ async function closeStale(repo, branch, why) {
         tipTree = await must(['rev-parse', `${baseSha}^{tree}`], cwd); // nothing to change on the tip itself
       }
       await must(['reset', '-q', '--hard'], cwd);
-      await must(['clean', '-fdqx', '--', 'patches', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
+      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);
       isTracked = await trackedIn();
       const superseded = new Set(supersededKeys(result));
@@ -250,7 +253,7 @@ async function closeStale(repo, branch, why) {
   const { classified, applied, verification } = tipResult || result;
   // Both runs' security findings: run B assesses patches for superseded items run A never made.
   const security = tipResult
-    ? { critical: [...tipResult.security.critical, ...result.security.critical], warn: [...tipResult.security.warn, ...result.security.warn] }
+    ? { critical: uniqHits([...tipResult.security.critical, ...result.security.critical]), warn: uniqHits([...tipResult.security.warn, ...result.security.warn]) }
     : result.security;
   const { outcome } = result; // what gets built: run B when there are undeployed commits
   const autoMerge = tipResult ? { ...result.autoMerge, reasons: [...tipResult.autoMerge.reasons, ...result.autoMerge.reasons] } : result.autoMerge;
