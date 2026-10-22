@@ -131,7 +131,7 @@ async function updatePr(repo, ref, branch, body) {
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
   // and requires `read:org`, which CI tokens usually lack.
-  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref}`, '-F', `body=@${bodyFile}`]);
+  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`]);
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
   core.setOutput('pr', num);
@@ -414,7 +414,8 @@ async function closeStale(repo, branch, why) {
   if (!updated) {
     const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
     fs.writeFileSync(bodyFile, body);
-    const title = `Reconcile server drift on ${ref}`;
+    // [commit only] in the title too: a squash merge's commit takes it, so a hand merge never deploys.
+    const title = `Reconcile server drift on ${ref} [commit only]`;
     const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', branch, '--base', ref, '--title', title, '--body-file', bodyFile]);
     if (created.code !== 0) { core.setFailed(`gh pr create failed:\n${created.out}`); return; }
     core.info(`Opened PR: ${created.out.trim()}`);
