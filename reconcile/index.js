@@ -131,7 +131,7 @@ async function updatePr(repo, ref, branch, body) {
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
   // and requires `read:org`, which CI tokens usually lack.
-  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref}`, '-F', `body=@${bodyFile}`]);
+  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`]);
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
   core.setOutput('pr', num);
@@ -245,7 +245,8 @@ async function closeStale(repo, branch, why) {
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo
     // gets it — while the tip's heal is what merges into {ref}.
-    if (autoMergeOn && pending && result.autoMerge.reasons.length === 0) {
+    // Auto-merge off: a human merges the whole PR, so it takes this shape whenever there are undeployed commits.
+    if (pending && (autoMergeOn ? result.autoMerge.reasons.length === 0 : true)) {
       tipResult = result;
       const tipStaged = await stageOutputs(cwd, result, isTracked);
       if (tipStaged.length) {
@@ -263,7 +264,7 @@ async function closeStale(repo, branch, why) {
       isTracked = await trackedIn();
       const superseded = new Set(supersededKeys(result));
       result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck,
-        only: new Set([...result.autoMerge.eligible, ...superseded]), supersededKeys: superseded });
+        only: new Set([...(autoMergeOn ? result.autoMerge.eligible : tipResult.classified.filter((c) => c.recoverable).map((c) => c.key)), ...superseded]), supersededKeys: superseded });
     }
   } catch (e) {
     core.setFailed(`reconcile-run failed: ${e.stack || e}`);
@@ -302,8 +303,8 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = `**Undeployed commits:** ${ref} has ${pending.commits} commit(s) not deployed yet (the last build is from \`${pending.since.slice(0, 7)}\`). ` +
-      `This heal is verified on that commit, merges next to them, and the built repo records the server's state, so their next Deploy goes through. Superseded items keep the repo's version, which that Deploy ships.\n\n` + body;
+    body = `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). ` +
+      `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, which then goes through.\n\n` + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
@@ -329,13 +330,13 @@ async function closeStale(repo, branch, why) {
   core.setOutput('auto-merge', autoMergeOn && autoMerge && autoMerge.ok ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
   core.setOutput('pending-paths', autoMergeOn ? ((autoMerge && autoMerge.pending) || []).join('\n') : '');
-  // Drift the PR leaves alone is listed once, under "Not in this PR".
+  // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
   const reasonLines = ((autoMerge && autoMerge.reasons) || []).filter((r) => !r.startsWith('needs a human:')).map((r) => `- ${r}`).join('\n');
   body = (!autoMergeOn
-    ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
+    ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
-      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : 'see “Not in this PR”.'}\n\n`) + body;
+      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : "see “Repo changes this PR can't make”."}\n\n`) + body;
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -369,9 +370,11 @@ async function closeStale(repo, branch, why) {
   // The merge fast-forwards {ref} to this commit (or, with undeployed commits, to F on top of it), so
   // its message is what the push-triggered Deploy reads: [commit only] = build it, require a
   // zero-change dry run, commit the build, never rsync; Self-heal-pending = paths left for review.
-  const pendingLines = autoMergeOn ? ((autoMerge && autoMerge.pending) || []).map((p) => `Self-heal-pending: ${p}`) : [];
+  // Merged by hand, the PR carries everything it applies: only what it leaves alone is pending.
+  const pendingLines = ((autoMerge && (autoMergeOn ? autoMerge.pending : result.autoMerge.open)) || []).map((p) => `Self-heal-pending: ${p}`);
   const committed = await sh('git', ['commit', '-m', tipResult
-    ? `Reconcile server drift on ${ref} [commit only]\n\nParity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`
+    ? [`Reconcile server drift on ${ref} [commit only]`, '', `Parity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`,
+      ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')
     : [`Reconcile server drift on ${ref} [commit only]`, '', 'Brings the repo in line with the server; verified to reproduce it before merging.',
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
   if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
@@ -414,7 +417,8 @@ async function closeStale(repo, branch, why) {
   if (!updated) {
     const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
     fs.writeFileSync(bodyFile, body);
-    const title = `Reconcile server drift on ${ref}`;
+    // [commit only] in the title too: a squash merge's commit takes it, so a hand merge never deploys.
+    const title = `Reconcile server drift on ${ref} [commit only]`;
     const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', branch, '--base', ref, '--title', title, '--body-file', bodyFile]);
     if (created.code !== 0) { core.setFailed(`gh pr create failed:\n${created.out}`); return; }
     core.info(`Opened PR: ${created.out.trim()}`);

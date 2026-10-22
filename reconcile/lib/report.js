@@ -10,17 +10,24 @@ const text = (c) => {
   return name ? r.slice(name.length + 2) : r;
 };
 
-// What a reader can do about drift this PR leaves alone, by kind; anything else keeps its own text.
+// Drift this PR leaves alone, as the repo change that would match the server. Anything else keeps its own text.
+const IGNORE = '`SSH_IGNORE_LIST_EXTRA`';
 const LEFT_OUT = {
   deferred: () => 'left out of this PR for review; the next run opens a PR for it.',
-  'needs-redeploy': () => 'in the build, but missing or different on the server. Not a repo change: the next Deploy puts it back (or ignore it with `SSH_IGNORE_LIST_EXTRA` if the server is right).',
-  unknown: () => 'only on the server, and not a plugin, theme or tracked file. Commit it, ignore it, or remove it from the server.',
+  'needs-redeploy': (c) => (c.onServer
+    ? `changed on the server, but the build adds it (composer or mu-plugins), so the repo has no copy to change. **To match:** make the change where it comes from, or add it to ${IGNORE} if the server's copy should stay as it is.`
+    : c.onServer === false
+      ? `in the build, not on the server. **To match:** add it to ${IGNORE} so the build's copy stops counting. Not done here: the build adds it (composer or mu-plugins), so the repo has no file to delete.`
+      : text(c)),
+  unknown: () => `on the server, not in the repo. **To match:** commit it, or add it to ${IGNORE} if it's data a plugin writes at runtime. Not done here: reconcile can't tell code the repo should own from runtime data.`,
 };
 
 /**
+ * Written for the engineer making the repo match the server: what happened on the server → the repo
+ * change, first the ones this PR makes, then the ones it can't.
  * @param {import('./classify').Classified[]} classified
  * @param {{ref:string, runUrl:string}} meta
- * @returns {string} markdown PR body: what this PR changes, then the drift it leaves alone
+ * @returns {string} markdown PR body
  */
 function reportBody(classified, meta) {
   const applied = classified.filter((c) => c.recoverable && !isPatched(c) && !isAdopted(c));
@@ -34,26 +41,29 @@ function reportBody(classified, meta) {
   const residual = inPr.filter((c) => c.verified === false);
   const tag = (c) => c.verified === true ? ' ✅'
     : c.verified === false ? ` ⚠️ ${c.residualFiles} file(s) still differ from the server after this change` : '';
+  const name = (c) => (c.key === 'wordpress-core' ? 'WordPress core' : `\`${c.composerPackage || c.key}\``);
 
-  const L = [`## Server drift on \`${meta.ref}\``, ''];
-  if (inPr.length) {
-    L.push(`This PR brings ${inPr.length} item(s) in line with the server`
-      + (residual.length ? `; ${residual.length} still differ after the change (⚠️).` : inPr.some((c) => c.verified) ? ', each checked to reproduce it (✅).' : '.'));
-  }
   const notCovered = leftOut.length + unrecoverable.length;
-  if (notCovered) L.push(`${notCovered} drifted item(s) are not covered by it (see below): the check stays red until they're handled.`);
+  const total = inPr.length + notCovered;
+  const L = [`## Make \`${meta.ref}\` match the server`, ''];
+  if (total) {
+    const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)` : inPr.some((c) => c.verified) ? ' (each checked against the server\'s files ✅)' : '';
+    L.push(`The server no longer matches \`${meta.ref}\`: ${total} repo change(s) would make them match. `
+      + (!notCovered ? `This PR makes all of them${checked}.`
+        : `This PR makes ${inPr.length}${checked}; ${notCovered} need a decision (below), and the check stays red until they're made.`));
+  }
   L.push('', `From the [consistency check run](${meta.runUrl}).`, '');
 
   if (inPr.length) {
-    L.push('### In this PR');
-    for (const c of applied) L.push(`- \`${c.composerPackage || c.key}\` — ${text(c)}${tag(c)}`);
-    for (const c of patched) L.push(`- 🩹 \`${c.composerPackage || c.key}\` — ${text(c)}${tag(c)}`);
+    L.push('### Repo changes in this PR');
+    for (const c of applied) L.push(`- ${name(c)} — ${text(c)}${tag(c)}`);
+    for (const c of patched) L.push(`- 🩹 ${name(c)} — ${text(c)}${tag(c)}`);
     for (const c of adopted) L.push(`- 📦 \`${c.key}\` — ${text(c)}${tag(c)}`);
     L.push('');
   }
   if (notCovered) {
-    L.push('### Not in this PR');
-    for (const c of leftOut) L.push(`- \`${c.composerPackage || c.key}\` — ${(LEFT_OUT[c.category] || text)(c)}`);
+    L.push('### Repo changes this PR can\'t make');
+    for (const c of leftOut) L.push(`- ${name(c)} — ${(LEFT_OUT[c.category] || text)(c)}`);
     for (const c of unrecoverable) L.push(`- ⛔ \`${c.key}\` — ${text(c)}`);
     L.push('');
   }
