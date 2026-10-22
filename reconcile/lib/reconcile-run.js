@@ -500,12 +500,14 @@ async function reconcileRun(o) {
   const critical = security.critical.length > 0;
   const eligible = critical ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
   const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category));
-  const pending = classified.filter((c) => !eligible.includes(c.key))
-    .map((c) => (c.root ? `/${c.root}/` : (c.key === 'wordpress-core' ? null : `/${c.key}`))).filter(Boolean);
+  const pathOf = (c) => (c.root ? `/${c.root}/` : (c.key === 'wordpress-core' ? null : `/${c.key}`));
+  const pending = classified.filter((c) => !eligible.includes(c.key)).map(pathOf).filter(Boolean);
+  // What this PR leaves on the server as it is (a hand-merged PR carries it all, held items included).
+  const open = classified.filter((c) => !c.recoverable).map(pathOf).filter(Boolean);
   const reasons = [...itemReasons.values()].flat();
   if (needsHuman.length) reasons.push(`needs a human: ${needsHuman.map((c) => `${c.key} (${c.category})`).join(', ')}`);
   if (critical) reasons.unshift('signals of compromised code — nothing merges automatically');
-  const autoMerge = { ok: !critical && eligible.length > 0 && !itemReasons.size && !needsHuman.length, reasons, eligible, pending: [...new Set(pending)] };
+  const autoMerge = { ok: !critical && eligible.length > 0 && !itemReasons.size && !needsHuman.length, reasons, eligible, pending: [...new Set(pending)], open: [...new Set(open)] };
 
   return { classified, outcome, applied, adoptedPaths, trackedPaths, verification, security, autoMerge };
 }
