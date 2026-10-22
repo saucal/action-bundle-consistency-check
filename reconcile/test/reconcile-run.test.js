@@ -618,5 +618,5 @@ test('firstComposerError: decodes GitHub-annotation encoded composer output', ()
   const out = '::error ::Your requirements could not be resolved to an installable set of packages.%0A%0A  Problem 1%0A    - Root composer.json requires wpackagist-plugin/x >=1.2, found wpackagist-plugin/x[2.0.0] but it conflicts with your temporary update constraint';
   const r = firstComposerError(out);
   assert.ok(!/::error|%0A/.test(r), r);
-  assert.match(r, /^- Root composer\.json requires wpackagist-plugin\/x >=1\.2/);
+  assert.match(r, /^Root composer\.json requires wpackagist-plugin\/x >=1\.2/);
 });

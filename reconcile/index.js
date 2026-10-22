@@ -329,16 +329,13 @@ async function closeStale(repo, branch, why) {
   core.setOutput('auto-merge', autoMergeOn && autoMerge && autoMerge.ok ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
   core.setOutput('pending-paths', autoMergeOn ? ((autoMerge && autoMerge.pending) || []).join('\n') : '');
-  const deferred = classified.filter((c) => c.category === 'deferred');
-  if (deferred.length) {
-    body = `**Left for review** — the next run opens a PR for: ${deferred.map((c) => `\`${c.key}\``).join(', ')}\n\n` + body;
-  }
-  const reasonLines = ((autoMerge && autoMerge.reasons) || []).map((r) => `- ${r}`).join('\n');
+  // Drift the PR leaves alone is listed once, under "Not in this PR".
+  const reasonLines = ((autoMerge && autoMerge.reasons) || []).filter((r) => !r.startsWith('needs a human:')).map((r) => `- ${r}`).join('\n');
   body = (!autoMergeOn
     ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
-      : `**Auto-merge:** held for a human —\n${reasonLines}\n\n`) + body;
+      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : 'see “Not in this PR”.'}\n\n`) + body;
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();

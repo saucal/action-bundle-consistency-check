@@ -551,7 +551,7 @@ function firstComposerError(out) {
   const text = out.replace(/::(error|warning|notice)[^:]*::/g, '').replace(/%0D/g, '').replace(/%0A/g, '\n').replace(/%25/g, '%');
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l));
-  return (hit || lines[lines.length - 1] || '').slice(0, 300);
+  return (hit || lines[lines.length - 1] || '').replace(/^-\s+/, '').slice(0, 300);
 }
 
 /**
