@@ -612,3 +612,11 @@ test('pending: an undeployed commit that dropped the core line is not undone', a
   assert.strictEqual(readCore(sourceDir), undefined, 'line stays dropped');
   assert.ok(!res.applied.some((a) => a.startsWith('core:managed-again')), res.applied.join(','));
 });
+
+test('firstComposerError: decodes GitHub-annotation encoded composer output', () => {
+  const { firstComposerError } = require('../lib/reconcile-run');
+  const out = '::error ::Your requirements could not be resolved to an installable set of packages.%0A%0A  Problem 1%0A    - Root composer.json requires wpackagist-plugin/x >=1.2, found wpackagist-plugin/x[2.0.0] but it conflicts with your temporary update constraint';
+  const r = firstComposerError(out);
+  assert.ok(!/::error|%0A/.test(r), r);
+  assert.match(r, /^- Root composer\.json requires wpackagist-plugin\/x >=1\.2/);
+});

@@ -306,6 +306,7 @@ async function reconcileRun(o) {
     }
     if (!res.patchFile) continue;
     c.patchFile = res.patchFile;
+    c.remediation = `${c.composerPackage}: locked at the server's v${c.version || '?'}, plus \`${res.patchFile.replace(/^\.\//, '')}\` for the server's edits on top of the published release.`;
     c.delta = assessDiff(fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8'));
     if (c.delta.critical.length) {
       await withdrawPatch(o, c);
@@ -546,7 +547,9 @@ function serverHits(c, treeRoot) {
 /** Pull the most informative line out of composer's error output for a one-line reason. */
 function firstComposerError(out) {
   if (!out) return '';
-  const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  // GitHub-annotation encoded output (`::error ::…%0A…`) reads as one garbled line: decode it first.
+  const text = out.replace(/::(error|warning|notice)[^:]*::/g, '').replace(/%0D/g, '').replace(/%0A/g, '\n').replace(/%25/g, '%');
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l));
   return (hit || lines[lines.length - 1] || '').slice(0, 300);
 }
@@ -590,4 +593,4 @@ function shipsScripts(dir) {
   return false;
 }
 
-module.exports = { reconcileRun };
+module.exports = { reconcileRun, firstComposerError };
