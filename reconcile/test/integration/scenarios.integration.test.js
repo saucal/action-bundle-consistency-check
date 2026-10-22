@@ -136,7 +136,7 @@ test('bump: clean newer version on server -> bump-only, no patch', async () => {
   // The PR description says what happened: a version move, not a patch.
   const vc = res.classified.find((c) => c.key === 'verplug');
   assert.strictEqual(vc.category, 'satispress', 'bump-only is reported as a version move');
-  assert.match(vc.remediation, /locked at the server's v1\.1\.0; .*no patch is needed/);
+  assert.match(vc.remediation, /v1\.1\.0 on the server → lock moved to v1\.1\.0 \(the server's files match that release exactly\)/);
   // Verify pass (real composer): the bumped install byte-matches the server's 1.1.0 dir → converges.
   const vp = findByKey(res.classified, 'verplug');
   assert.strictEqual(vp.verified, true, 'bump verifies clean against server');

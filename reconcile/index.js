@@ -303,8 +303,8 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = `**Undeployed commits:** ${ref} has ${pending.commits} commit(s) not deployed yet (the last build is from \`${pending.since.slice(0, 7)}\`). ` +
-      `This heal is verified on that commit, merges next to them, and the built repo records the server's state, so their next Deploy goes through. Superseded items keep the repo's version, which that Deploy ships.\n\n` + body;
+    body = `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). ` +
+      `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, which then goes through.\n\n` + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
@@ -330,13 +330,13 @@ async function closeStale(repo, branch, why) {
   core.setOutput('auto-merge', autoMergeOn && autoMerge && autoMerge.ok ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
   core.setOutput('pending-paths', autoMergeOn ? ((autoMerge && autoMerge.pending) || []).join('\n') : '');
-  // Drift the PR leaves alone is listed once, under "Not in this PR".
+  // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
   const reasonLines = ((autoMerge && autoMerge.reasons) || []).filter((r) => !r.startsWith('needs a human:')).map((r) => `- ${r}`).join('\n');
   body = (!autoMergeOn
-    ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
+    ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
-      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : 'see “Not in this PR”.'}\n\n`) + body;
+      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : "see “Repo changes this PR can't make”."}\n\n`) + body;
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();

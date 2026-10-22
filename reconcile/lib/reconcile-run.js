@@ -73,7 +73,7 @@ async function reconcileRun(o) {
       if (VERSION_CATEGORIES.has(c.category) || (c.category === 'patched-candidate' && o.pending.packages.has(c.composerPackage))) {
         c.category = 'superseded';
         c.recoverable = false;
-        c.remediation = `${c.key}: also changed by commits not yet deployed (since ${short}); the repo's version stands and the next Deploy ships it.`;
+        c.remediation = `changed on the server, but commits not deployed yet (since ${short}) change it too. **No repo change:** the repo's version stands, and the next Deploy ships it.`;
       } else {
         pendingHolds.set(c.key, `${c.key}: also changed by commits not yet deployed (since ${short}) — review which version should win`);
       }
@@ -119,7 +119,7 @@ async function reconcileRun(o) {
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       applied.push(`core:${repoCore}->${remoteCore}`);
       classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: true, verified: true,
-        remediation: `WordPress core on the server is ${remoteCore}; extra.wordpress-core ${repoCore} → ${remoteCore}.` });
+        remediation: `${remoteCore} on the server → \`extra.wordpress-core\` ${repoCore} → ${remoteCore}.` });
     } else {
       classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: false,
         remediation: `The server reported an unexpected WordPress core version (${remoteCore.slice(0, 40)}); not applied.` });
@@ -210,7 +210,7 @@ async function reconcileRun(o) {
       upd = await tryUpdate();
       if (upd.code === 0) {
         c.constraintRelaxed = { from: existing, to: relaxed };
-        c.remediation = `${c.composerPackage}: constraint \`${existing}\` → \`${relaxed}\` and locked at the server's v${target}.`;
+        c.remediation = `v${target} on the server → constraint \`${existing}\` → \`${relaxed}\`, locked at v${target}.`;
         applied.push(`require:${c.composerPackage}:relaxed`);
         continue;
       }
@@ -225,15 +225,15 @@ async function reconcileRun(o) {
       c.category = 'version-unavailable';
       c.composerOutput = ((upd.stdout || '') + (upd.stderr || '')).trim().slice(-1600);
       const reason = firstComposerError(c.composerOutput);
-      c.remediation = `Server has ${c.key}${target ? ` v${target}` : ''}, but composer could not install \`${c.composerPackage}\`${target ? ` at v${target}` : ''}${reason ? ` — ${reason}` : ''}. Merging would not bring the site in sync; resolve and re-run.`;
+      c.remediation = `${target ? `v${target}` : 'a version'} on the server. **To match:** lock \`${c.composerPackage}\`${target ? ` at v${target}` : ''}. Not done here: composer can't install it${reason ? ` (${reason.replace(/\.+$/, '')})` : ''}. Once the registry offers it, a later check makes this change; to match sooner, commit the plugin's files to the repo.`;
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }
     // Say what was actually done: the classify-time text predates the solve.
     if (target) {
-      c.remediation = !had ? `Added \`${c.composerPackage}:${versionConstraint(target)}\` and locked at the server's v${target}.`
-        : lockedBefore[c.composerPackage] === String(target) ? `${c.composerPackage}: already locked at the server's v${target}; nothing to change.`
-        : `${c.composerPackage}: locked at the server's v${target} (constraint \`${existing}\` unchanged).`;
+      c.remediation = !had ? `installed on the server at v${target} → added to composer.json (\`${versionConstraint(target)}\`), locked at v${target}.`
+        : lockedBefore[c.composerPackage] === String(target) ? `v${target} on the server → already locked at v${target}; nothing to change.`
+        : `v${target} on the server → lock moved to v${target} (constraint \`${existing}\` unchanged).`;
     }
     applied.push(`require:${c.composerPackage}`);
   }
@@ -301,12 +301,12 @@ async function reconcileRun(o) {
     if (res.action === 'bump-only') {
       // The published release reproduces the server: a plain version move, not a patch.
       c.category = String(c.composerPackage).startsWith('wpackagist-') ? `wpackagist-${c.kind || 'plugin'}` : 'satispress';
-      c.remediation = `${c.composerPackage}: locked at the server's v${c.version || '?'}; its files match the published release, so no patch is needed.`;
+      c.remediation = `v${c.version || '?'} on the server → lock moved to v${c.version || '?'} (the server's files match that release exactly).`;
       continue;
     }
     if (!res.patchFile) continue;
     c.patchFile = res.patchFile;
-    c.remediation = `${c.composerPackage}: locked at the server's v${c.version || '?'}, plus \`${res.patchFile.replace(/^\.\//, '')}\` for the server's edits on top of the published release.`;
+    c.remediation = `v${c.version || '?'} with local edits on the server → locked at v${c.version || '?'}, edits kept in \`${res.patchFile.replace(/^\.\//, '')}\`.`;
     c.delta = assessDiff(fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8'));
     if (c.delta.critical.length) {
       await withdrawPatch(o, c);

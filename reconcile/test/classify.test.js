@@ -192,6 +192,18 @@ test('tracked: a loose file in a tracked directory (client-mu-plugins, acf-json)
   assert.strictEqual(findKey(out, 'acf-json/group_1.json').category, 'tracked', 'new file in a tracked dir');
 });
 
+test('tracked: the text says what happened on the server (deleted / changed / added)', async () => {
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.writeFileSync(path.join(treeRoot, 'changed.txt'), 'server');
+  const out = await classify([{ path: 'test', side: 'build-only' }, { path: 'changed.txt', side: 'build-only' }, { path: 'new.txt', side: 'remote-only' }],
+    { resolvers, treeRoot, isTracked: () => true });
+  assert.strictEqual(findKey(out, 'test').remediation, 'deleted on the server → deleted from the repo.');
+  assert.strictEqual(findKey(out, 'changed.txt').remediation, "changed on the server → the repo takes the server's version.");
+  assert.strictEqual(findKey(out, 'new.txt').remediation, 'added on the server → added to the repo.');
+  const loose = await classify([{ path: 'mu/.gitignore', side: 'build-only' }], { resolvers, treeRoot });
+  assert.strictEqual(findKey(loose, 'mu/.gitignore').onServer, false);
+});
+
 test('tracked: untracked paths classify as before', async () => {
   const out = await classify([{ path: 'plugins/code-snippets/code-snippets.php', side: 'remote-only' }],
     { resolvers, treeRoot: '/nonexistent', isTracked: tracked(['plugins/custom-plugin/custom-plugin.php']) });

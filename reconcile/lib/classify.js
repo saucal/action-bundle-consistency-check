@@ -39,12 +39,13 @@ async function classify(items, ctx) {
 
   const out = [];
   const isTracked = ctx.isTracked || (() => false);
-  for (const it of loose) out.push(looseVerdict(it, isTracked));
+  const onServer = (p) => !!ctx.treeRoot && fs.existsSync(path.join(ctx.treeRoot, p));
+  for (const it of loose) out.push({ ...looseVerdict(it, isTracked, onServer), onServer: onServer(it.path) });
   for (const comp of components.values()) out.push(...[].concat(await componentVerdict(comp, ctx, isTracked)));
   return out;
 }
 
-function looseVerdict(it, isTracked) {
+function looseVerdict(it, isTracked, onServer = () => true) {
   const p = it.path;
   if (WP_CORE_RE.test(p)) {
     return { key: p, category: 'wp-core', recoverable: true,
@@ -60,7 +61,7 @@ function looseVerdict(it, isTracked) {
   }
   // Code the repo commits (client-mu-plugins, acf-json, ...): the server's version is the fix.
   const dir = path.posix.dirname(p);
-  if (isTracked(p) || (dir !== '.' && isTracked(dir))) return trackedVerdict(p, null, [p]);
+  if (isTracked(p) || (dir !== '.' && isTracked(dir))) return trackedVerdict(p, null, [it], onServer);
   if (it.side === 'build-only') {
     return { key: p, category: 'needs-redeploy', recoverable: false,
       remediation: `In build but missing/changed on server (${p}). Redeploy required; not a source change.` };
@@ -74,10 +75,16 @@ function looseVerdict(it, isTracked) {
 }
 
 /** Committed code: copy the server's version of these paths (deletions included) into source. */
-function trackedVerdict(key, comp, paths) {
-  return { key, category: 'tracked', recoverable: true, paths,
-    ...(comp ? { root: comp.root, kind: comp.kind } : {}),
-    remediation: `${comp ? `${comp.kind} ${comp.slug}` : key} is committed to the repo; taking the server's version of ${paths.length} file(s).` };
+function trackedVerdict(key, comp, items, onServer) {
+  // remote-only = only on the server; build-only = missing on the server, or different there.
+  const how = (it) => (it.side === 'remote-only' ? 'added' : onServer(it.path) ? 'changed' : 'deleted');
+  const n = { added: 0, changed: 0, deleted: 0 };
+  for (const it of items) n[how(it)]++;
+  const remediation = items.length === 1
+    ? { added: 'added on the server → added to the repo.', changed: 'changed on the server → the repo takes the server\'s version.', deleted: 'deleted on the server → deleted from the repo.' }[how(items[0])]
+    : `${Object.entries(n).filter(([, v]) => v).map(([k, v]) => `${v} file(s) ${k}`).join(', ')} on the server → the repo takes the server's version of each.`;
+  return { key, category: 'tracked', recoverable: true, paths: items.map((it) => it.path),
+    ...(comp ? { root: comp.root, kind: comp.kind } : {}), remediation };
 }
 
 async function componentVerdict(comp, ctx, isTracked) {
@@ -92,10 +99,10 @@ async function componentVerdict(comp, ctx, isTracked) {
   // Committed to the repo: never look it up in a registry (a public slug collision would pull a
   // stranger's package). Sensitive files are never copied; they are flagged on their own.
   if (isTracked(comp.root)) {
-    const keep = comp.paths.filter((it) => !isIgnorable(it.path) && !isSensitive(it.path)).map((it) => it.path);
+    const keep = comp.paths.filter((it) => !isIgnorable(it.path) && !isSensitive(it.path));
     const flagged = comp.paths.filter((it) => isSensitive(it.path)).map((it) => ({ key: it.path, category: 'sensitive', recoverable: false,
       remediation: `Sensitive file in committed ${label} changed on server (${it.path}). Review manually; never auto-commit.` }));
-    return keep.length ? [trackedVerdict(comp.slug, comp, keep), ...flagged] : flagged;
+    return keep.length ? [trackedVerdict(comp.slug, comp, keep, (p) => !!treeRoot && fs.existsSync(path.join(treeRoot, p))), ...flagged] : flagged;
   }
 
   const dir = path.join(treeRoot, comp.root);
@@ -106,10 +113,10 @@ async function componentVerdict(comp, ctx, isTracked) {
     const pkg = Object.keys(ctx.requires || {}).find((n) => n.split('/')[1] === comp.slug);
     if (pkg) {
       return { key: comp.slug, category: 'removed', recoverable: true, composerPackage: pkg, root: comp.root, kind: comp.kind,
-        remediation: `${label} is no longer on the server: removing \`${pkg}\` from composer.json.` };
+        remediation: `removed from the server → \`${pkg}\` removed from composer.json.` };
     }
     return { key: comp.slug, category: 'needs-redeploy', recoverable: false,
-      remediation: `${label} is in the build but not on the server, and no composer require installs it. Redeploy, or remove it from the repo.` };
+      remediation: `in the build, not on the server, and no composer require installs it. **To match:** remove it from the repo.` };
   }
 
   const hdr = comp.kind === 'theme' ? themeVersion(dir) : pluginVersion(dir);
@@ -151,7 +158,7 @@ async function componentVerdict(comp, ctx, isTracked) {
 
   return { key: comp.slug, category: 'premium-flag', recoverable: false,
     root: comp.root, kind: comp.kind,
-    remediation: `Premium/unknown ${label}${treeVersion ? ` v${treeVersion}` : ''} on server, not on wpackagist or SatisPress. Add to SatisPress or vendor into the repo.` };
+    remediation: `${treeVersion ? `v${treeVersion}` : 'on the server'}${treeVersion ? ' on the server' : ''}, not on wpackagist or SatisPress. **To match:** add it to SatisPress, or commit its files to the repo.` };
 }
 
 module.exports = { classify, versionConstraint, isComposerVersion };
