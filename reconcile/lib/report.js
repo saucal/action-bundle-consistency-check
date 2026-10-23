@@ -26,7 +26,8 @@ const LEFT_OUT = {
  * Written for the engineer making the repo match the server: what happened on the server → the repo
  * change, first the ones this PR makes, then the ones it can't.
  * @param {import('./classify').Classified[]} classified
- * @param {{ref:string, runUrl:string}} meta
+ * @param {{ref:string, runUrl:string, already?:string|true}} meta  already: {ref} carries every repo change
+ *   already (no PR): the merged heal's sha, or true when they're in commits not deployed yet
  * @returns {string} markdown PR body
  */
 function reportBody(classified, meta) {
@@ -48,21 +49,26 @@ function reportBody(classified, meta) {
   const L = [`## Make \`${meta.ref}\` match the server`, ''];
   if (total) {
     const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)` : inPr.some((c) => c.verified) ? ' (each checked against the server\'s files ✅)' : '';
-    L.push(`The server no longer matches \`${meta.ref}\`: ${total} repo change(s) would make them match. `
-      + (!notCovered ? `This PR makes all of them${checked}.`
-        : `This PR makes ${inPr.length}${checked}; ${notCovered} need a decision (below), and the check stays red until they're made.`));
+    const open = notCovered ? ` ${notCovered} need a decision (below), and the check stays red until they're made.` : '';
+    L.push(meta.already
+      ? `\`${meta.ref}\` already has the ${inPr.length} repo change(s) that match the server, so there's no PR. `
+        + (meta.already === true ? 'They are in commits not deployed yet: the next Deploy ships them.'
+          : `They came in with \`${meta.already.slice(0, 7)}\`, whose build was never recorded in the built repo: this run records it there, without deploying.`) + open
+      : `The server no longer matches \`${meta.ref}\`: ${total} repo change(s) would make them match. `
+        + (!notCovered ? `This PR makes all of them${checked}.`
+          : `This PR makes ${inPr.length}${checked}; ${notCovered} need a decision (below), and the check stays red until they're made.`));
   }
   L.push('', `From the [consistency check run](${meta.runUrl}).`, '');
 
   if (inPr.length) {
-    L.push('### Repo changes in this PR');
+    L.push(meta.already ? `### Already in \`${meta.ref}\`` : '### Repo changes in this PR');
     for (const c of applied) L.push(`- ${name(c)} — ${text(c)}${tag(c)}`);
     for (const c of patched) L.push(`- 🩹 ${name(c)} — ${text(c)}${tag(c)}`);
     for (const c of adopted) L.push(`- 📦 \`${c.key}\` — ${text(c)}${tag(c)}`);
     L.push('');
   }
   if (notCovered) {
-    L.push('### Repo changes this PR can\'t make');
+    L.push(meta.already ? '### Repo changes still to make' : '### Repo changes this PR can\'t make');
     for (const c of leftOut) L.push(`- ${name(c)} — ${(LEFT_OUT[c.category] || text)(c)}`);
     for (const c of unrecoverable) L.push(`- ⛔ \`${c.key}\` — ${text(c)}`);
     L.push('');

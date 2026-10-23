@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody } = require('./lib/report');
+const { findMergedHeal, pendingOf } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 
@@ -228,6 +229,7 @@ async function closeStale(repo, branch, why) {
   let result;
   let tipResult = null; // undeployed commits: run A (the tip) — `result` is then run B (the deployed commit)
   let tipTree = '';
+  let merged = null; // the tip already carries every repo change: { sha } of the merged heal ('' if none)
   try {
     const runOnce = (only, p = pending) => reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck, only, pending: p || undefined });
     const supersededKeys = (r) => r.classified.filter((c) => c.category === 'superseded').map((c) => c.key);
@@ -256,20 +258,42 @@ async function closeStale(repo, branch, why) {
         await must(['commit', '-q', '-m', `chore: reconcile server drift on ${ref}`], cwd);
         tipTree = await must(['rev-parse', 'HEAD^{tree}'], cwd);
       } else {
-        tipTree = await must(['rev-parse', `${baseSha}^{tree}`], cwd); // nothing to change on the tip itself
+        // Nothing to change on the tip: a heal merged before whose built-repo record never landed, or
+        // fixes committed by hand. No PR or commit for that: the check's status and summary say it.
+        merged = { sha: findMergedHeal((await sh('git', ['log', '--no-merges', '--format=%H%x09%s', `${pending.since}..${baseSha}`], { cwd, silent: true })).out, ref) };
       }
-      await must(['reset', '-q', '--hard'], cwd);
-      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
-      await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);
-      isTracked = await trackedIn();
-      const superseded = new Set(supersededKeys(result));
-      result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck,
-        only: new Set([...(autoMergeOn ? result.autoMerge.eligible : tipResult.classified.filter((c) => c.recoverable).map((c) => c.key)), ...superseded]), supersededKeys: superseded });
+      if (!merged) {
+        await must(['reset', '-q', '--hard'], cwd);
+        await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
+        await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);
+        isTracked = await trackedIn();
+        const superseded = new Set(supersededKeys(result));
+        result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck,
+          only: new Set([...(autoMergeOn ? result.autoMerge.eligible : tipResult.classified.filter((c) => c.recoverable).map((c) => c.key)), ...superseded]), supersededKeys: superseded });
+      }
     }
   } catch (e) {
     core.setFailed(`reconcile-run failed: ${e.stack || e}`);
     return;
   }
+  if (merged) {
+    const { sha } = merged;
+    await core.summary.addRaw(reportBody(result.classified, { ref, runUrl, already: sha || true })).write();
+    await closeStale(repo, branch, `\`${ref}\` already carries every change it proposed${sha ? ` (${sha.slice(0, 7)})` : ''}.`);
+    if (sha) {
+      // The verify job builds the heal (zero-change dry run, its own pending paths ignored) and records it in the built repo.
+      core.setOutput('head-sha', baseSha);
+      core.setOutput('build-sha', sha);
+      core.setOutput('pending-paths', pendingOf((await sh('git', ['show', '-s', '--format=%B', sha], { cwd, silent: true })).out));
+      core.notice(`${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: recording it. No PR, nothing deployed.`);
+    } else {
+      core.notice(`${ref} already carries every repo change, in commits not deployed yet: the next Deploy ships them. No PR.`);
+    }
+    const open = result.classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length;
+    if (open) core.setFailed(`${open} item(s) still need a decision: see the job summary.`);
+    return;
+  }
+
   // With undeployed commits the PR shows the tip's heal (run A); merging, verify and the built repo
   // follow the heal on the deployed commit (run B).
   const { classified, applied, verification } = tipResult || result;
@@ -329,7 +353,8 @@ async function closeStale(repo, branch, why) {
 
   core.setOutput('auto-merge', autoMergeOn && autoMerge && autoMerge.ok ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
-  core.setOutput('pending-paths', autoMergeOn ? ((autoMerge && autoMerge.pending) || []).join('\n') : '');
+  // Auto-merge off: what this run leaves alone (the recovery path's verify still runs then).
+  core.setOutput('pending-paths', ((autoMerge && (autoMergeOn ? autoMerge.pending : autoMerge.open)) || []).join('\n'));
   // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
   const reasonLines = ((autoMerge && autoMerge.reasons) || []).filter((r) => !r.startsWith('needs a human:')).map((r) => `- ${r}`).join('\n');
   body = (!autoMergeOn

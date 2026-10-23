@@ -57,3 +57,16 @@ test('all verified -> the summary says each was checked', () => {
   const body = reportBody([{ key: 'ok', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/ok', remediation: 'add', verified: true }], { ref: 'main', runUrl: 'u' });
   assert.match(body, /1 repo change\(s\) would make them match\. This PR makes all of them \(each checked against the server's files ✅\)/);
 });
+
+test('already in the branch: no PR wording, says what this run does', () => {
+  const items = [
+    { key: 'ok', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/ok', remediation: 'add', verified: true },
+    { key: 'w3tc-config/master.php', category: 'unknown', recoverable: false, remediation: 'x' },
+  ];
+  const body = reportBody(items, { ref: 'main', runUrl: 'u', already: '0a214e4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+  assert.match(body, /`main` already has the 1 repo change\(s\) that match the server, so there's no PR\. They came in with `0a214e4`.*records it there, without deploying\. 1 need a decision/);
+  assert.match(body, /### Already in `main`/);
+  assert.match(body, /### Repo changes still to make/);
+  assert.doesNotMatch(body, /this PR/i);
+  assert.match(reportBody(items, { ref: 'main', runUrl: 'u', already: true }), /in commits not deployed yet: the next Deploy ships them/);
+});
