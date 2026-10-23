@@ -69,4 +69,7 @@ test('already in the branch: no PR wording, says what this run does', () => {
   assert.match(body, /### Repo changes still to make/);
   assert.doesNotMatch(body, /this PR/i);
   assert.match(reportBody(items, { ref: 'main', runUrl: 'u', already: true }), /in commits not deployed yet: the next Deploy ships them/);
+  const onlyOpen = reportBody([items[1]], { ref: 'main', runUrl: 'u', already: true });
+  assert.match(onlyOpen, /No repo change would bring `main` closer to the server, so there's no PR\. 1 need a decision/);
+  assert.doesNotMatch(onlyOpen, /already has|### Already/);
 });

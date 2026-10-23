@@ -50,7 +50,9 @@ function reportBody(classified, meta) {
   if (total) {
     const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)` : inPr.some((c) => c.verified) ? ' (each checked against the server\'s files ✅)' : '';
     const open = notCovered ? ` ${notCovered} need a decision (below), and the check stays red until they're made.` : '';
-    L.push(meta.already
+    L.push(meta.already && !inPr.length
+      ? `No repo change would bring \`${meta.ref}\` closer to the server, so there's no PR.${open}`
+      : meta.already
       ? `\`${meta.ref}\` already has the ${inPr.length} repo change(s) that match the server, so there's no PR. `
         + (meta.already === true ? 'They are in commits not deployed yet: the next Deploy ships them.'
           : `They came in with \`${meta.already.slice(0, 7)}\`, whose build was never recorded in the built repo: this run records it there, without deploying.`) + open

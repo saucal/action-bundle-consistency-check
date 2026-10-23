@@ -286,7 +286,7 @@ async function closeStale(repo, branch, why) {
       core.setOutput('build-sha', sha);
       core.setOutput('pending-paths', pendingOf((await sh('git', ['show', '-s', '--format=%B', sha], { cwd, silent: true })).out));
       core.notice(`${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: recording it. No PR, nothing deployed.`);
-    } else {
+    } else if (result.classified.some((c) => c.recoverable)) {
       core.notice(`${ref} already carries every repo change, in commits not deployed yet: the next Deploy ships them. No PR.`);
     }
     const open = result.classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length;
