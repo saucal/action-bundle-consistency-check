@@ -266,6 +266,12 @@ async function closeStale(repo, branch, why) {
         await must(['reset', '-q', '--hard'], cwd);
         await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
         await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);
+        // plugins/ is gitignored, so the checkout keeps run A's patched installs: reinstall them as the
+        // deployed commit has them, or run B diffs the server against run A's copy and writes no patch.
+        for (const c of tipResult.classified.filter((x) => x.patchFile && x.composerPackage)) {
+          const re = await runner.composer(['reinstall', c.composerPackage, '--no-progress'], { cwd });
+          if (re.code !== 0) throw new Error(`composer reinstall ${c.composerPackage} failed:\n${re.stdout || ''}${re.stderr || ''}`);
+        }
         isTracked = await trackedIn();
         const superseded = new Set(supersededKeys(result));
         result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck,
