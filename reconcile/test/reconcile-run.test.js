@@ -620,3 +620,23 @@ test('firstComposerError: decodes GitHub-annotation encoded composer output', ()
   assert.ok(!/::error|%0A/.test(r), r);
   assert.match(r, /^Root composer\.json requires wpackagist-plugin\/x >=1\.2/);
 });
+
+test('unavailable on wpackagist: refreshes the package once, then the retry locks it', async () => {
+  const sourceDir = tmpSource();
+  let refreshed = [];
+  const runner = {
+    composer(args) { return { code: args[0] === 'install' || refreshed.length ? 0 : 1, stdout: '', stderr: '' }; },
+    async refreshWpackagist(slug) { refreshed.push(slug); return true; },
+  };
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+  assert.deepStrictEqual(refreshed, ['code-snippets']);
+  assert.ok(res.applied.includes('refreshed:wpackagist-plugin/code-snippets'), res.applied.join(','));
+  assert.notStrictEqual(res.classified.find((x) => x.key === 'code-snippets').category, 'version-unavailable');
+
+  // Still missing after the refresh: flagged as before, refreshed only once.
+  refreshed = [];
+  const stuck = { composer(args) { return { code: args[0] === 'install' ? 0 : 1, stdout: '', stderr: '' }; }, async refreshWpackagist(slug) { refreshed.push(slug); return true; } };
+  const res2 = await reconcileRun({ sourceDir: tmpSource(), treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner: stuck });
+  assert.deepStrictEqual(refreshed, ['code-snippets']);
+  assert.strictEqual(res2.classified.find((x) => x.key === 'code-snippets').category, 'version-unavailable');
+});

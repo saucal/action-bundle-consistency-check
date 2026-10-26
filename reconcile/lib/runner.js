@@ -14,6 +14,14 @@ function makeRunner() {
     composer: (args, opts) => run('composer', [...args, '--no-interaction'], opts),
     git: (args, opts) => run('git', args, opts),
     run,
+    // wpackagist's per-package Refresh button (POST /update): its mirror can lag wordpress.org by weeks.
+    async refreshWpackagist(slug, waitMs = 5000) {
+      try {
+        await fetch('https://wpackagist.org/update', { method: 'POST', body: new URLSearchParams({ name: slug }), redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (saucal consistency reconcile)' } });
+      } catch { return false; }
+      await new Promise((r) => setTimeout(r, waitMs));
+      return true;
+    },
   };
 }
 module.exports = { makeRunner };
