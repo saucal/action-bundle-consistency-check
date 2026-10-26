@@ -200,6 +200,12 @@ async function reconcileRun(o) {
       return u.code === 0 ? u : o.runner.composer(['update', c.composerPackage, '-W', ...withArg, '--no-progress'], { cwd: o.sourceDir });
     };
     let upd = pinnedDiffers ? { code: 1, stdout: '', stderr: '' } : await tryUpdate();
+    // The registry may just not have picked the release up yet: ask wpackagist to refresh it once, then retry.
+    if (upd.code !== 0 && !pinnedDiffers && /^wpackagist-(plugin|theme)\//.test(c.composerPackage) && o.runner.refreshWpackagist
+        && await o.runner.refreshWpackagist(c.composerPackage.split('/')[1])) {
+      upd = await tryUpdate();
+      if (upd.code === 0) applied.push(`refreshed:${c.composerPackage}`);
+    }
 
     // The constraint itself rules the server's version out (a pin it moved past, or a floor above a
     // downgrade): relax it to `>=<server>` and retry. Restore it if even that cannot install.
