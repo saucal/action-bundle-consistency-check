@@ -231,7 +231,9 @@ async function reconcileRun(o) {
       c.category = 'version-unavailable';
       c.composerOutput = ((upd.stdout || '') + (upd.stderr || '')).trim().slice(-1600);
       const reason = firstComposerError(c.composerOutput);
-      c.remediation = `${target ? `v${target}` : 'a version'} on the server. **To match:** lock \`${c.composerPackage}\`${target ? ` at v${target}` : ''}. Not done here: composer can't install it${reason ? ` (${reason.replace(/\.+$/, '')})` : ''}. Once the registry offers it, a later check makes this change; to match sooner, commit the plugin's files to the repo.`;
+      // The server's own header (it may not be a version composer can parse, e.g. 4.0.0-dev2), not the pin tried.
+      const onServer = c.serverVersion || target;
+      c.remediation = `${onServer ? `v${onServer}` : 'a version'} on the server. **To match:** lock \`${c.composerPackage}\`${target ? ` at v${target}` : ''}. Not done here: composer can't install it${reason ? ` (${reason.replace(/\.+$/, '')})` : ''}. Once the registry offers it, a later check makes this change; to match sooner, commit the plugin's files to the repo.`;
       applied.push(`require:${c.composerPackage}:unavailable`);
       continue;
     }

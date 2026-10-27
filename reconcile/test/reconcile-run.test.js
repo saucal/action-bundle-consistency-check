@@ -640,3 +640,15 @@ test('unavailable on wpackagist: refreshes the package once, then the retry lock
   assert.deepStrictEqual(refreshed, ['code-snippets']);
   assert.strictEqual(res2.classified.find((x) => x.key === 'code-snippets').category, 'version-unavailable');
 });
+
+test('unavailable: the remediation names the server header version, not the fallback pin', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = fs.mkdtempSync(path.join(require('os').tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins/code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins/code-snippets/code-snippets.php'), '<?php\n/**\n * Plugin Name: Code Snippets\n * Version: 4.0.0-dev2\n */\n');
+  const runner = { composer(args) { return { code: args[0] === 'install' ? 0 : 1, stdout: '', stderr: '' }; } };
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: 'plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(c.category, 'version-unavailable');
+  assert.match(c.remediation, /^v4\.0\.0-dev2 on the server/);
+});

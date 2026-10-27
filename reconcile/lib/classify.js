@@ -131,11 +131,11 @@ async function componentVerdict(comp, ctx, isTracked) {
     const isModified = comp.paths.some((it) => modifiedPaths.has(it.path));
     if (isModified) {
       return { key: comp.slug, category: 'patched-candidate', recoverable: true,
-        composerPackage: res.package, version: pin, root: comp.root, kind: comp.kind,
+        composerPackage: res.package, version: pin, serverVersion: treeVersion || null, root: comp.root, kind: comp.kind,
         remediation: `${label} is modified from its published version. Bump-first to ${pin ? `v${pin}` : 'its published version'}, then patch the residual (resolved at apply time).` };
     }
     return { key: comp.slug, category: res.source, recoverable: true,
-      composerPackage: res.package, version: pin, root: comp.root, kind: comp.kind,
+      composerPackage: res.package, version: pin, serverVersion: treeVersion || null, root: comp.root, kind: comp.kind,
       remediation: `Add/bump \`${res.package}:${versionConstraint(pin)}\` in composer.json (server has ${label}${treeVersion ? ` v${treeVersion}` : ''}).` };
   }
 
