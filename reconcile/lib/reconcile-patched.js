@@ -14,7 +14,9 @@ const { pluginVersion, themeVersion } = require('./extract-version');
  * @param {object} o.runner       makeRunner()-shaped { composer(args,{cwd}) }
  * @param {string} [o.pluginRoot] repo-relative plugin root (default plugins/<slug>)
  * @param {() => Promise<boolean>} [o.ensurePatchSupport] called only once a real residual exists, before the patch is written
- * @returns {Promise<{action:'patched'|'bump-only'|'version-mismatch'|'patch-unsupported', patchFile?:string, installed?:string, server?:string}>}
+ * @param {boolean} [o.allowVersionGap] the server runs a version no registry offers: patch it on top of
+ *   the installed (newest published) one, a bridge, instead of stopping at the version mismatch
+ * @returns {Promise<{action:'patched'|'bridged'|'bump-only'|'version-mismatch'|'patch-unsupported', patchFile?:string, installed?:string, server?:string}>}
  */
 async function reconcilePatched(o) {
   const pluginRoot = o.pluginRoot || `plugins/${o.slug}`;
@@ -26,22 +28,7 @@ async function reconcilePatched(o) {
   //    install/reinstall). Without this, an "already-patched refresh" would diff
   //    against the previously-patched state and the regenerated patch would not
   //    apply cleanly from pristine.
-  if (fs.existsSync(composerPath)) {
-    const c0text = fs.readFileSync(composerPath, 'utf8');
-    const c0 = JSON.parse(c0text);
-    if (c0.extra && c0.extra.patches && c0.extra.patches[o.pkg]) {
-      // Its local patch files go too: rewritten below if a residual remains, orphaned otherwise.
-      for (const e of [].concat(c0.extra.patches[o.pkg])) {
-        const url = typeof e === 'string' ? e : e && e.url;
-        if (url && /^\.\/patches\/[^/]+$/.test(url)) fs.rmSync(path.join(o.projectDir, url), { force: true });
-      }
-      delete c0.extra.patches[o.pkg];
-      if (!Object.keys(c0.extra.patches).length) delete c0.extra.patches;
-      fs.writeFileSync(composerPath, serializeComposer(c0, c0text));
-      // Relock so the removed patch is no longer applied on the next install.
-      await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
-    }
-  }
+  await dropPatches(o.projectDir, o.pkg, o.runner);
 
   // 1. Restore pristine published files (bump-first reinstall).
   await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
@@ -54,7 +41,8 @@ async function reconcilePatched(o) {
   const header = pluginRoot.startsWith('themes/') ? themeVersion : pluginVersion;
   const installed = (header(installedDir) || {}).version || null;
   const server = (header(o.serverDir) || {}).version || null;
-  if (installed !== server) return { action: 'version-mismatch', installed, server };
+  const bridge = installed !== server;
+  if (bridge && !(o.allowVersionGap && installed && server)) return { action: 'version-mismatch', installed, server };
   if (o.ensurePatchSupport && !(await o.ensurePatchSupport())) return { action: 'patch-unsupported' };
 
   // 3. Write patch + register in composer.json.
@@ -66,7 +54,7 @@ async function reconcilePatched(o) {
   const composerText = fs.readFileSync(composerPath, 'utf8');
   const composer = JSON.parse(composerText);
   const { composer: next } = upsertExtraPatches(composer, o.pkg, {
-    description: `Reconciled from server drift for ${o.slug}`,
+    description: bridge ? `${BRIDGE}v${installed} → v${server} (no published release has it)` : `Reconciled from server drift for ${o.slug}`,
     url: patchFile,
     depth: 2,
   });
@@ -76,6 +64,33 @@ async function reconcilePatched(o) {
   await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
   await o.runner.composer(['patches-repatch'], { cwd: o.projectDir });
 
-  return { action: 'patched', patchFile };
+  return { action: bridge ? 'bridged' : 'patched', patchFile, installed, server };
 }
-module.exports = { reconcilePatched };
+
+// A bridge patch's description starts with this: the next version move drops it (see reconcile-run).
+const BRIDGE = 'Bridges ';
+
+/**
+ * Remove a package's extra.patches entries and their local patch files, then relock so they're no
+ * longer applied. Returns the removed entries.
+ */
+async function dropPatches(projectDir, pkg, runner) {
+  const composerPath = path.join(projectDir, 'composer.json');
+  if (!fs.existsSync(composerPath)) return [];
+  const text = fs.readFileSync(composerPath, 'utf8');
+  const c = JSON.parse(text);
+  if (!(c.extra && c.extra.patches && c.extra.patches[pkg])) return [];
+  const removed = [].concat(c.extra.patches[pkg]);
+  // Its local patch files go too: rewritten if a residual remains, orphaned otherwise.
+  for (const e of removed) {
+    const url = typeof e === 'string' ? e : e && e.url;
+    if (url && /^\.\/patches\/[^/]+$/.test(url)) fs.rmSync(path.join(projectDir, url), { force: true });
+  }
+  delete c.extra.patches[pkg];
+  if (!Object.keys(c.extra.patches).length) delete c.extra.patches;
+  fs.writeFileSync(composerPath, serializeComposer(c, text));
+  await runner.composer(['patches-relock'], { cwd: projectDir });
+  return removed;
+}
+
+module.exports = { reconcilePatched, dropPatches, BRIDGE };

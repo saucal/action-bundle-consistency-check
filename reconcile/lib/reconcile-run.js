@@ -7,7 +7,7 @@ const { classify, versionConstraint } = require('./classify');
 const { upsertRequire, removeRequire, isPinnedConstraint, ensureCweagansSetup, serializeComposer, REAPPLY } = require('./composer');
 const { riskyPluginCategory } = require('./risky-plugins');
 const { decideOutcome } = require('./outcome');
-const { reconcilePatched } = require('./reconcile-patched');
+const { reconcilePatched, dropPatches, BRIDGE } = require('./reconcile-patched');
 const { adoptComponent } = require('./adopt');
 const { isSensitive } = require('./detectors');
 const { generatePatch } = require('./patch-gen');
@@ -150,6 +150,22 @@ async function reconcileRun(o) {
     }
   } catch { /* no lock yet */ }
 
+  // A bridge patch only fits the version it was cut against: drop it before any version move, or
+  // composer would apply it to the new version and fail. Pass 2 cuts a new one if a gap remains.
+  if (o.runner && composer && composer.extra && composer.extra.patches) {
+    for (const c of classified) {
+      if (!c.recoverable || !c.composerPackage) continue;
+      const entries = [].concat(composer.extra.patches[c.composerPackage] || []);
+      if (!entries.some((e) => e && String(e.description || '').startsWith(BRIDGE))) continue;
+      await dropPatches(o.sourceDir, c.composerPackage, o.runner);
+      applied.push(`bridge-dropped:${c.composerPackage}`);
+    }
+    composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
+  }
+  // Classify fell back from a server header composer can't parse (4.0.0-dev2) to the newest published
+  // version: Pass 2 bridges the gap with a patch.
+  for (const c of classified) if (c.recoverable && c.serverVersion && c.version && c.serverVersion !== c.version) c.bridge = true;
+
   // Pass 1 — reproduce the server's EXACT version without bumping constraints. Install the
   // server's version into the LOCK via a temporary constraint (`--with <pkg>:<ver>`), leaving
   // composer.json's range untouched (add only a `>=<server>` floor for a brand-new require). This
@@ -222,6 +238,18 @@ async function reconcileRun(o) {
       }
       composer = upsertRequire(composer, c.composerPackage, existing).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+    }
+    if (upd.code !== 0 && target && c.root && o.treeRoot && fs.existsSync(path.join(o.treeRoot, c.root))) {
+      // No registry has the server's version (an unreleased build): install the newest one below it.
+      // Pass 2 bridges the rest with a patch; if it can't, this is undone after it.
+      c.requireBefore = { had, existing, locked: lockedBefore[c.composerPackage] };
+      composer = upsertRequire(composer, c.composerPackage, `<${target}`).composer;
+      fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+      upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
+      if (upd.code === 0) { c.bridge = true; applied.push(`require:${c.composerPackage}:bridge-base`); continue; }
+      composer = had ? upsertRequire(composer, c.composerPackage, existing).composer : removeRequire(composer, c.composerPackage).composer;
+      fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
+      delete c.requireBefore;
     }
     if (upd.code !== 0) {
       // Unsatisfiable — drop a new-add require so composer.json stays installable (existing range
@@ -298,6 +326,7 @@ async function reconcileRun(o) {
       pluginRoot: root,
       runner: o.runner,
       ensurePatchSupport,
+      allowVersionGap: !!c.bridge,
     });
     applied.push(`patched:${c.key}:${res.action}`);
     if (res.action === 'version-mismatch') {
@@ -312,17 +341,38 @@ async function reconcileRun(o) {
       c.remediation = `v${c.version || '?'} on the server → lock moved to v${c.version || '?'} (the server's files match that release exactly).`;
       continue;
     }
+    if (res.action === 'bridged') {
+      // Pin the base exactly: a range would move to the next release, where the patch can't apply.
+      const text = fs.readFileSync(composerPath, 'utf8');
+      composer = upsertRequire(JSON.parse(text), c.composerPackage, res.installed).composer;
+      fs.writeFileSync(composerPath, serializeComposer(composer, text));
+      c.bridged = { from: res.installed, to: res.server };
+    }
     if (!res.patchFile) continue;
     c.patchFile = res.patchFile;
-    c.remediation = `v${c.version || '?'} with local edits on the server → locked at v${c.version || '?'}, edits kept in \`${res.patchFile.replace(/^\.\//, '')}\`.`;
+    c.remediation = c.bridged
+      ? `v${c.bridged.to} on the server, which no published release has → pinned at v${c.bridged.from} (the newest published), with \`${res.patchFile.replace(/^\.\//, '')}\` bridging the rest. When the server moves to a release, the next check lifts the pin and drops the patch.`
+      : `v${c.version || '?'} with local edits on the server → locked at v${c.version || '?'}, edits kept in \`${res.patchFile.replace(/^\.\//, '')}\`.`;
     c.delta = assessDiff(fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8'));
     if (c.delta.critical.length) {
       await withdrawPatch(o, c);
+      delete c.bridged; // a Pass 1 fallback is undone below
       c.category = 'suspicious';
       c.recoverable = false;
       c.remediation = `${c.key}: the server's edits carry signals of compromised code — patch withheld from the PR. Review the server as a possible incident.`;
       applied.push(`patched:${c.key}:held-suspicious`);
     }
+  }
+
+  // A Pass 1 fallback Pass 2 didn't bridge: put the require and the lock back as they were.
+  for (const c of classified) {
+    if (!c.requireBefore || c.bridged) continue;
+    const { had, existing, locked } = c.requireBefore;
+    const text = fs.readFileSync(composerPath, 'utf8');
+    composer = (had ? upsertRequire : removeRequire)(JSON.parse(text), c.composerPackage, existing).composer;
+    fs.writeFileSync(composerPath, serializeComposer(composer, text));
+    await o.runner.composer(['update', c.composerPackage, ...(had && locked ? ['--with', `${c.composerPackage}:${locked}`] : []), '--no-progress'], { cwd: o.sourceDir });
+    applied.push(`require:${c.composerPackage}:bridge-undone`);
   }
 
   // Pass 2b — code committed to the repo (custom plugins/themes, client-mu-plugins, acf-json):
@@ -501,6 +551,7 @@ async function reconcileRun(o) {
     }
     if (c.delta && c.delta.holds.length) hold(c, `${c.key}: ${[...new Set(c.delta.holds.map((h) => h.rule))].join(', ')}`);
     if (pendingHolds.has(c.key)) hold(c, pendingHolds.get(c.key));
+    if (c.bridged) hold(c, `${c.key}: bridges to v${c.bridged.to}, which no published release has — confirm the site should run it`);
     if (o.supersededKeys && o.supersededKeys.has(c.key) && c.patchFile) {
       hold(c, `${c.key}: the server's edits to it would be dropped by the version in commits not yet deployed — review`);
     }
