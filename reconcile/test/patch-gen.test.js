@@ -58,3 +58,29 @@ test('generatePatch ignores file-mode-only differences (a chmod is not drift)', 
   assert.doesNotMatch(patch, /x\.php/, 'the chmod-only file is dropped');
   assert.doesNotMatch(patch, /^(?:old|new) mode/m, 'no mode lines (cweagans/patch would choke or chmod)');
 });
+
+test('a moved file is a delete plus an add, so the patch applies (rename headers carried the temp paths)', () => {
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-'));
+  const pristine = path.join(tmp, 'source/plugins/x');
+  const server = path.join(tmp, 'built/plugins/x');
+  const body = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  fs.mkdirSync(path.join(pristine, 'vendor'), { recursive: true });
+  fs.mkdirSync(server, { recursive: true });
+  fs.writeFileSync(path.join(pristine, 'vendor/LICENSE'), body);
+  fs.writeFileSync(path.join(server, 'LICENSE.txt'), body.replace('line 39', 'line 39!'));
+
+  const patch = generatePatch(pristine, server, 'plugins/x');
+  assert.doesNotMatch(patch, /^(rename|copy) (from|to) /m);
+  assert.doesNotMatch(patch, /source\/|built\//);
+
+  // It applies to a copy of the pristine tree, rooted where cweagans applies it (depth 2).
+  const work = path.join(tmp, 'work');
+  fs.mkdirSync(path.join(work, 'plugins'), { recursive: true });
+  fs.cpSync(pristine, path.join(work, 'plugins/x'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'p.patch'), patch);
+  execFileSync('git', ['apply', '-p0', path.join(tmp, 'p.patch')], { cwd: work });
+  assert.strictEqual(fs.readFileSync(path.join(work, 'plugins/x/LICENSE.txt'), 'utf8'), fs.readFileSync(path.join(server, 'LICENSE.txt'), 'utf8'));
+  assert.ok(!fs.existsSync(path.join(work, 'plugins/x/vendor/LICENSE')));
+});
