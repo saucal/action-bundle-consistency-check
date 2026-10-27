@@ -246,7 +246,11 @@ async function reconcileRun(o) {
       composer = upsertRequire(composer, c.composerPackage, `<${target}`).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       upd = await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress'], { cwd: o.sourceDir });
-      if (upd.code === 0) { c.bridge = true; applied.push(`require:${c.composerPackage}:bridge-base`); continue; }
+      // A branch (dev-trunk, on minimum-stability: dev) is no base to pin and patch.
+      const base = upd.code === 0 ? lockedVersion(o.sourceDir, c.composerPackage) : '';
+      if (base && !/^dev-|-dev$/.test(base)) { c.bridge = true; applied.push(`require:${c.composerPackage}:bridge-base`); continue; }
+      if (upd.code === 0) await o.runner.composer(['update', c.composerPackage, '-W', '--no-progress', ...(had ? ['--with', `${c.composerPackage}:${existing}`] : [])], { cwd: o.sourceDir });
+      upd = { code: 1, stdout: upd.stdout, stderr: upd.stderr };
       composer = had ? upsertRequire(composer, c.composerPackage, existing).composer : removeRequire(composer, c.composerPackage).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       delete c.requireBefore;
@@ -569,6 +573,14 @@ async function reconcileRun(o) {
   const autoMerge = { ok: !critical && eligible.length > 0 && !itemReasons.size && !needsHuman.length, reasons, eligible, pending: [...new Set(pending)], open: [...new Set(open)] };
 
   return { classified, outcome, applied, adoptedPaths, trackedPaths, verification, security, autoMerge };
+}
+
+/** The version composer.lock holds for a package ('' if none). */
+function lockedVersion(dir, pkg) {
+  try {
+    const p = (JSON.parse(fs.readFileSync(path.join(dir, 'composer.lock'), 'utf8')).packages || []).find((x) => x.name === pkg);
+    return p ? String(p.version).replace(/^v/, '') : '';
+  } catch { return ''; }
 }
 
 /** Numeric comparison of version strings (1.10 > 1.9); suffixes are ignored. */

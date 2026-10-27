@@ -184,6 +184,8 @@ test('patch: server edit at same version -> patch generated + applied', async ()
   const serverDir = stageServer(dir, (sv) => {
     const f = path.join(sv, 'plugins/patchplug/patchplug.php');
     fs.writeFileSync(f, read(f).replace('// app code', '// app code DRIFTED'));
+    // A binary file too: patches are cut with --binary, and cweagans must apply that hunk.
+    fs.writeFileSync(path.join(sv, 'plugins/patchplug/logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]));
   });
 
   const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
@@ -204,6 +206,8 @@ test('patch: server edit at same version -> patch generated + applied', async ()
   assert.ok(Array.isArray(entries) && entries.length === 1, 'one lock entry');
   assert.ok(typeof entries[0].sha256 === 'string' && entries[0].sha256.length > 0, 'entry sha256');
   assert.ok(res.applied.includes('patched:patchplug:patched'), `applied: ${res.applied}`);
+  assert.ok(fs.readFileSync(path.join(dir, 'plugins/patchplug/logo.png')).equals(fs.readFileSync(path.join(serverDir, 'plugins/patchplug/logo.png'))), 'binary file applied');
+  assert.strictEqual(findByKey(res.classified, 'patchplug').verified, true);
 });
 
 // --- 4. stale -----------------------------------------------------------
