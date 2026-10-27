@@ -15,7 +15,7 @@ function generatePatch(pristineDir, serverDir, pluginRelRoot) {
   let raw;
   try {
     // quotePath=false: non-ASCII names stay readable (quoted names would hide their real extension).
-    raw = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--no-index', '--no-prefix', '--', pristineDir, serverDir], { encoding: 'utf8' });
+    raw = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--no-index', '--no-prefix', '--binary', '--', pristineDir, serverDir], { encoding: 'utf8' });
   } catch (e) {
     // git diff --no-index exits 1 when differences exist; its diff is on stdout.
     raw = e.stdout ? e.stdout.toString() : '';

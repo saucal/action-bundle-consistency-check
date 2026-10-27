@@ -112,3 +112,19 @@ test('reconcilePatched: header versions differ after the pristine reinstall -> n
   assert.deepStrictEqual([res.installed, res.server], ['1.0.0', '1.0.1']);
   assert.ok(!fs.existsSync(path.join(projectDir, 'patches', 'fakeplug.patch')), 'no patch written');
 });
+
+test('reconcilePatched: a version gap is a mismatch, unless allowed: then a marked bridge patch', async () => {
+  const pristineFiles = { 'fakeplug.php': '<?php\n/**\n * Plugin Name: fakeplug\n * Version: 1.0.0\n */\n' };
+  const serverDir = mkdir('server-');
+  fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), '<?php\n/**\n * Plugin Name: fakeplug\n * Version: 2.0.0-dev2\n */\n');
+
+  let projectDir = scaffoldProject();
+  let res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, runner: makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles }) });
+  assert.deepStrictEqual(res, { action: 'version-mismatch', installed: '1.0.0', server: '2.0.0-dev2' });
+
+  projectDir = scaffoldProject();
+  res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, allowVersionGap: true, runner: makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles }) });
+  assert.strictEqual(res.action, 'bridged');
+  const entry = JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8')).extra.patches['saucal/fakeplug'][0];
+  assert.match(entry.description, /^Bridges v1\.0\.0 → v2\.0\.0-dev2/);
+});

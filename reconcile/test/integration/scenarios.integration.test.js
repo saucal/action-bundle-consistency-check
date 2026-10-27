@@ -184,6 +184,8 @@ test('patch: server edit at same version -> patch generated + applied', async ()
   const serverDir = stageServer(dir, (sv) => {
     const f = path.join(sv, 'plugins/patchplug/patchplug.php');
     fs.writeFileSync(f, read(f).replace('// app code', '// app code DRIFTED'));
+    // A binary file too: patches are cut with --binary, and cweagans must apply that hunk.
+    fs.writeFileSync(path.join(sv, 'plugins/patchplug/logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]));
   });
 
   const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
@@ -204,6 +206,8 @@ test('patch: server edit at same version -> patch generated + applied', async ()
   assert.ok(Array.isArray(entries) && entries.length === 1, 'one lock entry');
   assert.ok(typeof entries[0].sha256 === 'string' && entries[0].sha256.length > 0, 'entry sha256');
   assert.ok(res.applied.includes('patched:patchplug:patched'), `applied: ${res.applied}`);
+  assert.ok(fs.readFileSync(path.join(dir, 'plugins/patchplug/logo.png')).equals(fs.readFileSync(path.join(serverDir, 'plugins/patchplug/logo.png'))), 'binary file applied');
+  assert.strictEqual(findByKey(res.classified, 'patchplug').verified, true);
 });
 
 // --- 4. stale -----------------------------------------------------------
@@ -425,8 +429,8 @@ test('mixed: add + patch + junk -> all categories, outcome reconciled', async ()
 });
 
 // --- 11. unavailable version --------------------------------------------
-test('unavailable: server version exceeds anything published -> flagged, composer.json not broken', async () => {
-  // futureplug exists as a path repo at 1.0.0 only; server claims 2.0.0.
+test('unavailable: server version exceeds anything published -> newest published pinned, bridge patch', async () => {
+  // futureplug exists as a path repo at 1.0.0 only; server runs 2.0.0 (no registry has it).
   const { dir } = makeProject({
     plugins: [
       { slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' },
@@ -438,11 +442,9 @@ test('unavailable: server version exceeds anything published -> flagged, compose
   delete composer.require['saucal/futureplug'];
   fs.writeFileSync(composerPath, JSON.stringify(composer, null, 4) + '\n');
   const runner = makeRunner();
-  let r = await runner.composer(['update', 'saucal/futureplug', '-W', '--no-progress'], { cwd: dir });
+  const r = await runner.composer(['update', 'saucal/futureplug', '-W', '--no-progress'], { cwd: dir });
   assert.strictEqual(r.code, 0, r.stderr);
-  const composerBefore = read(composerPath);
 
-  // resolver maps futureplug -> package, but the server header (2.0.0) drives the pin.
   const resolvers = {
     async wpackagist() { return null; },
     async satispress(slug) {
@@ -450,26 +452,70 @@ test('unavailable: server version exceeds anything published -> flagged, compose
       return null;
     },
   };
-
   const serverDir = stageServer(dir, (sv) => {
     const d = path.join(sv, 'plugins/futureplug');
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, 'futureplug.php'),
-      '<?php\n/**\n * Plugin Name: futureplug\n * Version: 2.0.0\n */\n// future\n');
+      '<?php\n/**\n * Plugin Name: futureplug\n * Version: 2.0.0\n */\n// future, two\n');
   });
 
   const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
   const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers, runner });
 
   const c = findByKey(res.classified, 'futureplug');
-  assert.strictEqual(c.category, 'version-unavailable', `category: ${c && c.category}`);
-  assert.strictEqual(c.recoverable, false);
-  // composer.json is still installable — the unsatisfiable constraint was reverted.
+  assert.deepStrictEqual(c.bridged, { from: '1.0.0', to: '2.0.0' }, `${c.category}: ${c.remediation} | ${res.applied}`);
+  assert.strictEqual(c.recoverable, true);
+  assert.strictEqual(c.verified, true, 'the bridged install matches the server');
   const after = JSON.parse(read(composerPath));
-  assert.ok(!after.require['saucal/futureplug'], 'unavailable add reverted out of require');
-  assert.ok(after.require['saucal/baseplug'], 'existing deps preserved');
-  assert.strictEqual(read(composerPath), composerBefore, 'composer.json byte-identical to pre-reconcile');
-  assert.ok(res.applied.includes('require:saucal/futureplug:unavailable'), `applied: ${res.applied}`);
+  assert.strictEqual(after.require['saucal/futureplug'], '1.0.0', 'base pinned exactly');
+  assert.match(after.extra.patches['saucal/futureplug'][0].description, /^Bridges v1\.0\.0 → v2\.0\.0/);
+  assert.ok(res.applied.includes('require:saucal/futureplug:bridge-base'), `applied: ${res.applied}`);
+  assert.ok(res.autoMerge.reasons.some((x) => /futureplug: bridges to v2\.0\.0/.test(x)), 'held for a human');
+  assert.strictEqual((await runner.composer(['validate', '--no-check-all', '--no-check-publish', '--check-lock'], { cwd: dir })).code, 0, 'lock in sync');
+});
+
+test('bridge then rematch: an unparseable server header is bridged; a later release on the server lifts the pin and drops the patch', async () => {
+  const { dir } = makeProject({
+    plugins: [
+      { slug: 'devplug', pkg: 'saucal/devplug', version: '1.0.0', body: '// one\n' },
+      { slug: 'devplug', pkg: 'saucal/devplug', version: '2.0.0', body: '// two\n' },
+    ],
+  });
+  const runner = makeRunner();
+  const composerPath = path.join(dir, 'composer.json');
+  const resolvers = {
+    async wpackagist() { return null; },
+    async satispress(slug) { return slug === 'devplug' ? { source: 'satispress', package: 'saucal/devplug', version: '1.0.0' } : null; },
+  };
+
+  // 1. The server runs 2.0.0-dev2: composer can't parse it, so classify pins the published 1.0.0.
+  const dev = stageServer(dir, (sv) => {
+    fs.writeFileSync(path.join(sv, 'plugins/devplug/devplug.php'),
+      '<?php\n/**\n * Plugin Name: devplug\n * Version: 2.0.0-dev2\n */\n// two, almost\n');
+  });
+  let drift = deriveDrift(dir, dev);
+  let res = await reconcileRun({ sourceDir: dir, treeRoot: dev, ...drift, resolvers, runner });
+  let c = findByKey(res.classified, 'devplug');
+  assert.deepStrictEqual(c.bridged, { from: '1.0.0', to: '2.0.0-dev2' }, `${c.category}: ${c.remediation} | ${res.applied}`);
+  assert.strictEqual(c.verified, true);
+  assert.strictEqual(JSON.parse(read(composerPath)).require['saucal/devplug'], '1.0.0');
+
+  // 2. The server moves to the 2.0.0 release: the pin is lifted, the bridge patch dropped.
+  const rel = stageServer(dir, (sv) => {
+    // The whole release replaces the plugin (its composer.json says 2.0.0 too).
+    fs.rmSync(path.join(sv, 'plugins/devplug'), { recursive: true });
+    fs.cpSync(path.join(dir, 'pkgs/devplug-2.0.0'), path.join(sv, 'plugins/devplug'), { recursive: true });
+  });
+  drift = deriveDrift(dir, rel);
+  res = await reconcileRun({ sourceDir: dir, treeRoot: rel, ...drift, resolvers, runner });
+  c = findByKey(res.classified, 'devplug');
+  assert.ok(res.applied.includes('bridge-dropped:saucal/devplug'), `applied: ${res.applied}`);
+  assert.ok(!c.bridged && !c.patchFile, `${c.category}: ${c.remediation}`);
+  assert.strictEqual(c.verified, true);
+  const after = JSON.parse(read(composerPath));
+  assert.strictEqual(after.require['saucal/devplug'], '>=2.0.0', 'pin lifted to the release');
+  assert.ok(!(after.extra.patches && after.extra.patches['saucal/devplug']), 'bridge patch dropped');
+  assert.ok(!fs.existsSync(path.join(dir, 'patches/devplug.patch')), 'patch file removed');
 });
 
 // --- 12. adopt: unresolvable premium plugin vendored into source --------
