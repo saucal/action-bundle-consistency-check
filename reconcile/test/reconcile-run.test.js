@@ -283,6 +283,22 @@ test('no cweagans: a modified-from-published plugin BOOTSTRAPS the patch setup, 
   assert.ok(res.applied.some((a) => a.startsWith('patched:code-snippets')), res.applied.join(','));
 });
 
+test('a patch that edits a version header is held, never auto-merged', async () => {
+  const sourceDir = tmpSource();
+  fs.mkdirSync(path.join(sourceDir, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'plugins', 'code-snippets', 'readme.txt'), '=== Code Snippets ===\nStable tag: 3.6.5\n');
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'code-snippets', 'readme.txt'), '=== Code Snippets ===\nStable tag: 3.7.0\n');
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: 'deleting plugins/code-snippets/readme.txt\n',
+    contentDiffText: 'diff --git plugins/code-snippets/readme.txt plugins/code-snippets/readme.txt\n@@ -1 +1 @@\n-a\n+b\n', resolvers, runner: fakeRunner() });
+  const c = res.classified.find((x) => x.key === 'code-snippets');
+  assert.ok(c.patchFile, res.applied.join(','));
+  assert.strictEqual(res.autoMerge.ok, false);
+  assert.ok(!res.autoMerge.eligible.includes('code-snippets'));
+  assert.ok(res.autoMerge.reasons.some((r) => r.includes("patch changes the plugin's version header")), res.autoMerge.reasons.join(' | '));
+});
+
 // --- security scan of server-derived content ---------------------------------------------
 const showMissing = () => ({ calls: [], composer(args) { this.calls.push(args); return { code: args[0] === 'show' ? 1 : 0, stdout: '', stderr: '' }; } });
 
