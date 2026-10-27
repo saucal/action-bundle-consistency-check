@@ -69,11 +69,16 @@ async function vulnCheck(items) {
  * repo's HEAD) and what changed between it and the tip. null when the tip is what was built, or the
  * build's source can't be read (then the heal works on the tip alone, as before).
  */
+/** The source commit the built repo's last build names ('' when it names none). */
+async function lastBuild(treeRoot) {
+  const m = /Build changes from ([0-9a-f]{40})/.exec((await sh('git', ['-C', path.resolve(treeRoot), 'log', '-1', '--format=%s'], { silent: true })).out);
+  return m ? m[1] : '';
+}
+
 async function undeployed(treeRoot, cwd, tip, ref) {
   const quiet = { cwd, silent: true };
-  const m = /Build changes from ([0-9a-f]{40})/.exec((await sh('git', ['-C', path.resolve(treeRoot), 'log', '-1', '--format=%s'], { silent: true })).out);
-  if (!m || m[1] === tip) return null;
-  const since = m[1];
+  const since = await lastBuild(treeRoot);
+  if (!since || since === tip) return null;
   if ((await sh('git', ['cat-file', '-e', `${since}^{commit}`], quiet)).code !== 0) await sh('git', ['fetch', '-q', '--no-tags', 'origin', since], quiet);
   // CI checkouts are shallow: deepen {ref} back to a day before the build's source, so the ancestry
   // check and the diff see the commits in between (bounded, unlike --unshallow).
@@ -308,7 +313,7 @@ async function closeStale(repo, branch, why) {
     ? { critical: uniqHits([...tipResult.security.critical, ...result.security.critical]), warn: uniqHits([...tipResult.security.warn, ...result.security.warn]) }
     : result.security;
   const { outcome } = result; // what gets built: run B when there are undeployed commits
-  const autoMerge = tipResult ? { ...result.autoMerge, reasons: [...tipResult.autoMerge.reasons, ...result.autoMerge.reasons] } : result.autoMerge;
+  const autoMerge = tipResult ? { ...result.autoMerge, reasons: [...new Set([...tipResult.autoMerge.reasons, ...result.autoMerge.reasons])] } : result.autoMerge;
   core.info(`Reconcile outcome: ${outcome} | applied: ${applied.join(', ') || '(none)'}`);
 
   // Where we land: verified = a deploy from this PR reproduces the server for that component;
@@ -386,7 +391,8 @@ async function closeStale(repo, branch, why) {
     } else {
       // Source already carries every recoverable fix (e.g. a heal whose built push failed last
       // run): let the gate rebuild {ref} as-is — if that converges it only commits the built repo.
-      core.setOutput('head-sha', baseSha);
+      // Not when the built repo already records {ref}'s tip: that rebuild would record nothing.
+      if ((await lastBuild(treeRoot)) !== baseSha) core.setOutput('head-sha', baseSha);
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
     if (suspicious) {
