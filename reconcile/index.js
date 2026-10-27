@@ -378,7 +378,9 @@ async function closeStale(repo, branch, why) {
   // 3. Stage and commit only reconcile's outputs.
   const staged = await stageOutputs(cwd, result, isTracked);
   if (!staged.length) {
-    await core.summary.addRaw(body).write();
+    // No PR, so no PR wording (a withdrawn suspicious heal keeps its PR, and its body, below).
+    const suspicious = classified.some((c) => c.category === 'suspicious');
+    await core.summary.addRaw(suspicious ? body : reportBody(classified, { ref, runUrl, already: true })).write();
     if (outcome === 'ignorable-only') {
       core.warning('Drift is entirely ignorable. Recommend updating SSH_IGNORE_LIST; see job summary.');
     } else {
@@ -387,7 +389,7 @@ async function closeStale(repo, branch, why) {
       core.setOutput('head-sha', baseSha);
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
-    if (classified.some((c) => c.category === 'suspicious')) {
+    if (suspicious) {
       await updatePr(repo, ref, branch, body); // the open PR says what was found now
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
