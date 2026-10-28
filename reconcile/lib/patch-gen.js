@@ -15,11 +15,12 @@ function generatePatch(pristineDir, serverDir, pluginRelRoot) {
   let raw;
   try {
     // quotePath=false: non-ASCII names stay readable (quoted names would hide their real extension).
-    raw = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--no-index', '--no-prefix', '--binary', '--no-renames', '--', pristineDir, serverDir], { encoding: 'utf8' });
+    raw = execFileSync('git', ['-c', 'core.quotePath=false', 'diff', '--no-index', '--no-prefix', '--binary', '--no-renames', '--', pristineDir, serverDir], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   } catch (e) {
-    // git diff --no-index exits 1 when differences exist; its diff is on stdout.
+    // git diff --no-index exits 1 when differences exist; its diff is on stdout. Anything else
+    // (ENOBUFS included, which also carries a partial stdout) would be a truncated patch.
+    if (e.status !== 1 || e.code) throw e;
     raw = e.stdout ? e.stdout.toString() : '';
-    if (!raw) throw e;
   }
   // File modes are not drift (FTP clients and hosts flip them freely, and a mode-only patch is
   // useless to cweagans): drop mode lines, then any file left with no content change at all.

@@ -84,3 +84,20 @@ test('a moved file is a delete plus an add, so the patch applies (rename headers
   assert.strictEqual(fs.readFileSync(path.join(work, 'plugins/x/LICENSE.txt'), 'utf8'), fs.readFileSync(path.join(server, 'LICENSE.txt'), 'utf8'));
   assert.ok(!fs.existsSync(path.join(work, 'plugins/x/vendor/LICENSE')));
 });
+
+test('a diff over 1 MB comes out whole (execFileSync truncates at its default maxBuffer)', () => {
+  const { execFileSync } = require('child_process');
+  const a = mkdir('pg-big-a-');
+  const b = mkdir('pg-big-b-');
+  const line = (i) => `line ${i} ${'x'.repeat(60)}\n`;
+  fs.writeFileSync(path.join(a, 'big.txt'), Array.from({ length: 30000 }, (_, i) => line(i)).join(''));
+  fs.writeFileSync(path.join(b, 'big.txt'), Array.from({ length: 30000 }, (_, i) => line(-i)).join(''));
+  const patch = generatePatch(a, b, 'plugins/big');
+  assert.ok(patch.length > 2 * 1024 * 1024, `patch is ${patch.length} bytes`);
+  const work = mkdir('pg-big-w-');
+  fs.mkdirSync(path.join(work, 'plugins/big'), { recursive: true });
+  fs.copyFileSync(path.join(a, 'big.txt'), path.join(work, 'plugins/big/big.txt'));
+  fs.writeFileSync(path.join(work, 'p.patch'), patch);
+  execFileSync('git', ['apply', '-p0', 'p.patch'], { cwd: work });
+  assert.strictEqual(fs.readFileSync(path.join(work, 'plugins/big/big.txt'), 'utf8'), fs.readFileSync(path.join(b, 'big.txt'), 'utf8'));
+});
