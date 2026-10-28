@@ -357,7 +357,9 @@ async function reconcileRun(o) {
     c.remediation = c.bridged
       ? `v${c.bridged.to} on the server, which no published release has → pinned at v${c.bridged.from} (the newest published), with \`${res.patchFile.replace(/^\.\//, '')}\` bridging the rest. When the server moves to a release, the next check lifts the pin and drops the patch.`
       : `v${c.version || '?'} with local edits on the server → locked at v${c.version || '?'}, edits kept in \`${res.patchFile.replace(/^\.\//, '')}\`.`;
-    c.delta = assessDiff(fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8'));
+    const patchText = fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8');
+    c.delta = assessDiff(patchText);
+    c.editsVersion = editsVersion(patchText);
     if (c.delta.critical.length) {
       await withdrawPatch(o, c);
       delete c.bridged; // a Pass 1 fallback is undone below
@@ -555,7 +557,9 @@ async function reconcileRun(o) {
     }
     if (c.delta && c.delta.holds.length) hold(c, `${c.key}: ${[...new Set(c.delta.holds.map((h) => h.rule))].join(', ')}`);
     if (pendingHolds.has(c.key)) hold(c, pendingHolds.get(c.key));
+    // A patch that changes the version the site runs never merges unattended.
     if (c.bridged) hold(c, `${c.key}: bridges to v${c.bridged.to}, which no published release has — confirm the site should run it`);
+    else if (c.patchFile && c.editsVersion) hold(c, `${c.key}: its patch changes the plugin's version header — confirm the site should run it`);
     if (o.supersededKeys && o.supersededKeys.has(c.key) && c.patchFile) {
       hold(c, `${c.key}: the server's edits to it would be dropped by the version in commits not yet deployed — review`);
     }
@@ -573,6 +577,11 @@ async function reconcileRun(o) {
   const autoMerge = { ok: !critical && eligible.length > 0 && !itemReasons.size && !needsHuman.length, reasons, eligible, pending: [...new Set(pending)], open: [...new Set(open)] };
 
   return { classified, outcome, applied, adoptedPaths, trackedPaths, verification, security, autoMerge };
+}
+
+/** True when a patch adds or removes a WordPress version header line (`Version:` / `Stable tag:`). */
+function editsVersion(patchText) {
+  return /^[-+](?![-+]{2} )[\s*#/]*(?:Version|Stable tag)\s*:/im.test(patchText);
 }
 
 /** The version composer.lock holds for a package ('' if none). */
