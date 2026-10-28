@@ -256,6 +256,12 @@ async function reconcileRun(o) {
       delete c.requireBefore;
     }
     if (upd.code !== 0) {
+      const out = (upd.stdout || '') + (upd.stderr || '');
+      // A registry we cannot reach or authenticate to says nothing about the version: fail the run
+      // like the baseline install guard does, rather than report it unavailable and open a PR.
+      if (REGISTRY_ERROR.test(out)) {
+        throw new Error(`composer could not reach or authenticate a repository while resolving ${c.composerPackage} — check SatisPress auth (COMPOSER_AUTH):\n${out.slice(-1600)}`);
+      }
       // Unsatisfiable — drop a new-add require so composer.json stays installable (existing range
       // constraints were never touched, so there's nothing to revert for a bump).
       if (!had) { composer = removeRequire(composer, c.composerPackage).composer; fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText)); }
@@ -627,12 +633,14 @@ function serverHits(c, treeRoot) {
 }
 
 /** Pull the most informative line out of composer's error output for a one-line reason. */
+const REGISTRY_ERROR = /required authentication|HTTP 40[13]|Could not authenticate|curl error|failed to open stream/i;
+
 function firstComposerError(out) {
   if (!out) return '';
   // GitHub-annotation encoded output (`::error ::…%0A…`) reads as one garbled line: decode it first.
   const text = out.replace(/::(error|warning|notice)[^:]*::/g, '').replace(/%0D/g, '').replace(/%0A/g, '\n').replace(/%25/g, '%');
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l));
+  const hit = lines.find((l) => /could not be found|requires|no matching package|minimum-stability|does not (?:match|allow)|conflict|Root composer\.json requires/i.test(l) || REGISTRY_ERROR.test(l));
   return (hit || lines[lines.length - 1] || '').replace(/^-\s+/, '').slice(0, 300);
 }
 
