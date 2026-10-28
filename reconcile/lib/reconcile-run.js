@@ -566,7 +566,9 @@ async function reconcileRun(o) {
   }
   const critical = security.critical.length > 0;
   const eligible = critical ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
-  const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category));
+  // Superseded on the tip: the deployed commit's heal failing on one leaves it pending, not held (the tip's version stands).
+  const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category)
+    && !(o.supersededKeys && o.supersededKeys.has(c.key)));
   const pathOf = (c) => (c.root ? `/${c.root}/` : (c.key === 'wordpress-core' ? null : `/${c.key}`));
   const pending = classified.filter((c) => !eligible.includes(c.key)).map(pathOf).filter(Boolean);
   // What this PR leaves on the server as it is (a hand-merged PR carries it all, held items included).
