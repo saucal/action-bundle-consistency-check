@@ -471,9 +471,12 @@ async function reconcileRun(o) {
         c.category = res.skipped > 0 ? 'adopted-lossy' : 'adopted';
         c.recoverable = true;
         c.adoptedRoot = root;
-        c.remediation = res.skipped > 0
-          ? `Vendored ${c.key} into the repo (${res.files} files); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
-          : `Vendored ${c.key} into the repo (${res.files} files) — not available on wpackagist/SatisPress.`;
+        const count = `${res.files} file${res.files === 1 ? '' : 's'}`;
+        const named = (label, list) => (list.length ? ` ${label}: ${list.map((p) => `\`${p}\``).join(', ')}.` : '');
+        c.remediation = (res.skipped > 0
+          ? `Vendored ${c.key} into the repo (${count}); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
+          : `Vendored ${c.key} into the repo (${count}) — not available on wpackagist/SatisPress.`)
+          + named('Symlinks, committed as links', res.symlinks) + named('Files of 1 MB or more', res.large);
         adoptedPaths.push(root);
         applied.push(`adopt:${c.key}`);
       } catch (e) {
