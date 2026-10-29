@@ -177,6 +177,11 @@ async function reconcileRun(o) {
   for (const c of classified) {
     if (!c.recoverable || !c.composerPackage || !composer) continue;
     if (c.category === 'removed') {
+      // Its patches go with it, or a later reinstall at another version would get them applied.
+      if (o.runner && (await dropPatches(o.sourceDir, c.composerPackage, o.runner)).length) {
+        applied.push(`patches-dropped:${c.composerPackage}`);
+        composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
+      }
       composer = removeRequire(composer, c.composerPackage).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       if (o.runner) {
