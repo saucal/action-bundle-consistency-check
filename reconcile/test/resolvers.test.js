@@ -33,6 +33,23 @@ test('wpackagist returns null on 404 or error payload', async () => {
   assert.strictEqual(await wpackagist('plugin', 'missing'), null);
 });
 
+test('wpackagist resolves a theme through the themes/info/1.2 API (1.0 404s for themes)', async () => {
+  const f = fakeFetch({
+    'https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=twentytwentyfive': { slug: 'twentytwentyfive', version: '1.5' },
+  });
+  const { wpackagist } = makeResolvers({ fetch: f });
+  assert.deepStrictEqual(await wpackagist('theme', 'twentytwentyfive'),
+    { source: 'wpackagist-theme', package: 'wpackagist-theme/twentytwentyfive', version: '1.5' });
+});
+
+test('wpackagist returns null for an unknown theme', async () => {
+  const f = fakeFetch({
+    'https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=nope': { error: 'Theme not found' },
+  });
+  const { wpackagist } = makeResolvers({ fetch: f });
+  assert.strictEqual(await wpackagist('theme', 'nope'), null);
+});
+
 test('satispress returns null when no runner is given', async () => {
   const { satispress } = makeResolvers({ fetch: fakeFetch({}) });
   assert.strictEqual(await satispress('anything'), null);
