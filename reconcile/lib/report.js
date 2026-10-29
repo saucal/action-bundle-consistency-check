@@ -3,6 +3,9 @@
 const isPatched = (c) => c.category === 'patched' || c.category === 'patched-candidate';
 const isAdopted = (c) => c.category === 'adopted' || c.category === 'adopted-lossy';
 const OUTSIDE = new Set(['ignorable', 'compiled-asset', 'sensitive']);
+// Left out now, but nothing to decide: the next run opens their PR, or the next Deploy ships the repo's version.
+const LATER = new Set(['deferred', 'superseded']);
+const WAIT = "wait for the next run's PR or the next Deploy";
 // The entry already names the item: drop a leading "<name>: " from its text.
 const text = (c) => {
   const r = String(c.remediation || '');
@@ -49,7 +52,9 @@ function reportBody(classified, meta) {
   const L = [`## Make \`${meta.ref}\` match the server`, ''];
   if (total) {
     const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)` : inPr.some((c) => c.verified) ? ' (each checked against the server\'s files ✅)' : '';
-    const open = notCovered ? ` ${notCovered} need a decision (below), and the check stays red until they're made.` : '';
+    const later = leftOut.filter((c) => LATER.has(c.category)).length;
+    const decide = notCovered - later;
+    const open = (decide ? ` ${decide} need a decision (below), and the check stays red until they're made.` : '') + (later ? ` ${later} ${WAIT} (below).` : '');
     L.push(meta.already && !inPr.length
       ? `No repo change would bring \`${meta.ref}\` closer to the server, so there's no PR.${open}`
       : meta.already
@@ -58,7 +63,7 @@ function reportBody(classified, meta) {
           : `They came in with \`${meta.already.slice(0, 7)}\`, whose build was never recorded in the built repo: this run records it there, without deploying.`) + open
       : `The server no longer matches \`${meta.ref}\`: ${total} repo change(s) would make them match. `
         + (!notCovered ? `This PR makes all of them${checked}.`
-          : `This PR makes ${inPr.length}${checked}; ${notCovered} need a decision (below), and the check stays red until they're made.`));
+          : `This PR makes ${inPr.length}${checked};${open}`));
   }
   L.push('', `From the [consistency check run](${meta.runUrl}).`, '');
 
@@ -83,4 +88,11 @@ function reportBody(classified, meta) {
   return L.join('\n');
 }
 
-module.exports = { reportBody };
+/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). */
+function remaining(classified) {
+  const left = classified.filter((c) => !c.recoverable && c.category !== 'ignorable');
+  const later = left.filter((c) => LATER.has(c.category)).length;
+  return [left.length - later && `${left.length - later} item(s) need a decision`, later && `${later} item(s) ${WAIT}`].filter(Boolean).join(', ');
+}
+
+module.exports = { reportBody, remaining };

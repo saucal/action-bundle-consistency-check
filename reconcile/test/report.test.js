@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { reportBody } = require('../lib/report');
+const { reportBody, remaining } = require('../lib/report');
 
 const classified = [
   { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'Added wpackagist-plugin/code-snippets:>=3.6.5' },
@@ -72,4 +72,18 @@ test('already in the branch: no PR wording, says what this run does', () => {
   const onlyOpen = reportBody([items[1]], { ref: 'main', runUrl: 'u', already: true });
   assert.match(onlyOpen, /No repo change would bring `main` closer to the server, so there's no PR\. 1 need a decision/);
   assert.doesNotMatch(onlyOpen, /already has|### Already/);
+});
+
+test('deferred and superseded drift is not counted as needing a decision', () => {
+  const later = [
+    { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'x' },
+    { key: 'query-monitor', category: 'deferred', recoverable: false, remediation: 'x' },
+    { key: 'akismet', category: 'superseded', recoverable: false, remediation: 'x' },
+  ];
+  const body = reportBody(later, { ref: 'main', runUrl: 'u' });
+  assert.doesNotMatch(body, /need a decision/, body);
+  assert.match(body, /This PR makes 1; 2 wait for the next run's PR or the next Deploy \(below\)\./);
+  assert.strictEqual(remaining(later), "2 item(s) wait for the next run's PR or the next Deploy");
+  assert.strictEqual(remaining([...later, ...classified]), "2 item(s) need a decision, 2 item(s) wait for the next run's PR or the next Deploy");
+  assert.strictEqual(remaining(classified.slice(0, 1)), '');
 });
