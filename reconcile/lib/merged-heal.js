@@ -18,6 +18,12 @@ function findMergedHeal(logOut, ref) {
 const pendingOf = (message) => String(message).split('\n').filter((l) => l.startsWith('Self-heal-pending: ')).map((l) => l.slice(19).trim()).join('\n');
 
 /**
+ * The paths a heal's merge leaves on the server as they are. Merged unattended, that is what it did not
+ * apply; merged by hand (auto-merge off, or held), the PR carries everything it applies, held items included.
+ */
+const pendingOnMerge = (autoMergeOn, autoMerge) => (autoMergeOn && autoMerge.ok ? autoMerge.pending : autoMerge.open);
+
+/**
  * Items the heal on the tip (run A) recovers that the heal on the deployed commit (run B) does not:
  * run B is what gets built and recorded, so pushing anyway would record a parity commit without them.
  * Run A's superseded items are not recoverable there, so they never count.
@@ -28,4 +34,4 @@ function lostInRunB(tipClassified, classified) {
   return tipClassified.filter((c) => c.recoverable && !(b.get(c.key) || {}).recoverable).map((c) => b.get(c.key) || c);
 }
 
-module.exports = { findMergedHeal, pendingOf, lostInRunB };
+module.exports = { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB };
