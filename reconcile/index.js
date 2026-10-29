@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody } = require('./lib/report');
-const { findMergedHeal, pendingOf } = require('./lib/merged-heal');
+const { findMergedHeal, pendingOf, pendingOnMerge } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 
@@ -209,7 +209,6 @@ async function closeStale(repo, branch, why) {
   const baseSha = (await sh('git', ['rev-parse', `origin/${ref}`], { cwd })).out.trim();
   core.setOutput('base-sha', baseSha);
   const pending = await undeployed(treeRoot, cwd, baseSha, ref);
-  if (pending) core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
 
   // What the repo commits itself: those paths are healed by copying the server's version, never
   // looked up in a registry. A directory counts if it holds tracked files.
@@ -252,8 +251,10 @@ async function closeStale(repo, branch, why) {
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo
     // gets it — while the tip's heal is what merges into {ref}.
-    // Auto-merge off: a human merges the whole PR, so it takes this shape whenever there are undeployed commits.
-    if (pending && (autoMergeOn ? result.autoMerge.reasons.length === 0 : true)) {
+    // Every PR takes this shape, held ones too: merged by hand, a one-commit PR would record the tip
+    // (undeployed commits included) as what the server runs.
+    if (pending) {
+      core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
       tipResult = result;
       const tipStaged = await stageOutputs(cwd, result, isTracked);
       if (tipStaged.length) {
@@ -280,7 +281,8 @@ async function closeStale(repo, branch, why) {
         isTracked = await trackedIn();
         const superseded = new Set(supersededKeys(result));
         result = await reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck,
-          only: new Set([...(autoMergeOn ? result.autoMerge.eligible : tipResult.classified.filter((c) => c.recoverable).map((c) => c.key)), ...superseded]), supersededKeys: superseded });
+          // What run A applied (a mixed heal's rerun defers the rest); equals autoMerge.eligible when it merges unattended.
+          only: new Set([...tipResult.classified.filter((c) => c.recoverable).map((c) => c.key), ...superseded]), supersededKeys: superseded });
       }
     }
   } catch (e) {
@@ -410,7 +412,7 @@ async function closeStale(repo, branch, why) {
   // its message is what the push-triggered Deploy reads: [commit only] = build it, require a
   // zero-change dry run, commit the build, never rsync; Self-heal-pending = paths left for review.
   // Merged by hand, the PR carries everything it applies: only what it leaves alone is pending.
-  const pendingLines = ((autoMerge && (autoMergeOn ? autoMerge.pending : result.autoMerge.open)) || []).map((p) => `Self-heal-pending: ${p}`);
+  const pendingLines = ((autoMerge && pendingOnMerge(autoMergeOn, autoMerge)) || []).map((p) => `Self-heal-pending: ${p}`);
   const committed = await sh('git', ['commit', '-m', tipResult
     ? [`Reconcile server drift on ${ref} [commit only]`, '', `Parity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`,
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')

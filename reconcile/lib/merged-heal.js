@@ -17,4 +17,10 @@ function findMergedHeal(logOut, ref) {
 /** A commit message's "Self-heal-pending:" paths, one per line. */
 const pendingOf = (message) => String(message).split('\n').filter((l) => l.startsWith('Self-heal-pending: ')).map((l) => l.slice(19).trim()).join('\n');
 
-module.exports = { findMergedHeal, pendingOf };
+/**
+ * The paths a heal's merge leaves on the server as they are. Merged unattended, that is what it did not
+ * apply; merged by hand (auto-merge off, or held), the PR carries everything it applies, held items included.
+ */
+const pendingOnMerge = (autoMergeOn, autoMerge) => (autoMergeOn && autoMerge.ok ? autoMerge.pending : autoMerge.open);
+
+module.exports = { findMergedHeal, pendingOf, pendingOnMerge };
