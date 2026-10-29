@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody } = require('./lib/report');
-const { findMergedHeal, pendingOf, pendingOnMerge } = require('./lib/merged-heal');
+const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 
@@ -289,6 +289,17 @@ async function closeStale(repo, branch, why) {
     core.setFailed(`reconcile-run failed: ${e.stack || e}`);
     return;
   }
+  // Run B is what gets built and recorded: an item only run A recovered would vanish from the parity
+  // commit while the PR shows it as made. Fail closed: no push, no PR.
+  const lost = tipResult && !merged ? lostInRunB(tipResult.classified, result.classified) : [];
+  if (lost.length) {
+    await core.summary.addRaw([`## Consistency reconciliation`, '',
+      `The heal on the last deployed commit (\`${pending.since.slice(0, 7)}\`) could not make ${lost.length} change(s) the heal on \`${ref}\` makes, so nothing was pushed and no PR was opened or updated:`, '',
+      ...lost.map((c) => `- \`${c.composerPackage || c.key}\` — ${c.remediation || c.category}${c.composerOutput ? `\n\n  \`\`\`\n  ${String(c.composerOutput).trim().replace(/\n/g, '\n  ')}\n  \`\`\`` : ''}`),
+      '', `From the [consistency check run](${runUrl}).`].join('\n')).write();
+    core.setFailed(`The heal on the deployed commit lost ${lost.map((c) => c.key).join(', ')}: see the job summary. Nothing pushed.`);
+    return;
+  }
   if (merged) {
     const { sha } = merged;
     await core.summary.addRaw(reportBody(result.classified, { ref, runUrl, already: sha || true })).write();
@@ -332,11 +343,11 @@ async function closeStale(repo, branch, why) {
 
   // Surface composer's actual complaint for anything flagged unavailable (why the version
   // couldn't be installed: missing version, stability, or a broken global solve).
-  for (const c of classified) {
-    if (c.category === 'version-unavailable' && c.composerOutput) {
-      core.warning(`composer could not install ${c.composerPackage}:\n${c.composerOutput}`);
-    }
-  }
+  // Run B's too: it re-heals superseded items as fresh requires.
+  const unavailable = new Set([...classified, ...(tipResult ? result.classified : [])]
+    .filter((c) => c.category === 'version-unavailable' && c.composerOutput)
+    .map((c) => `composer could not install ${c.composerPackage}:\n${c.composerOutput}`));
+  for (const w of unavailable) core.warning(w);
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
@@ -369,7 +380,10 @@ async function closeStale(repo, branch, why) {
   // Auto-merge off: what this run leaves alone (the recovery path's verify still runs then).
   core.setOutput('pending-paths', ((autoMerge && (autoMergeOn ? autoMerge.pending : autoMerge.open)) || []).join('\n'));
   // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
-  const reasonLines = ((autoMerge && autoMerge.reasons) || []).filter((r) => !r.startsWith('needs a human:')).map((r) => `- ${r}`).join('\n');
+  // A "needs a human" reason is dropped only when the body lists every item it names, so a hold always shows why.
+  const cantMake = new Set(classified.filter((c) => !c.recoverable && c.category !== 'ignorable').map((c) => `${c.key} (${c.category})`));
+  const reasonLines = ((autoMerge && autoMerge.reasons) || [])
+    .filter((r) => !r.startsWith('needs a human: ') || !r.slice('needs a human: '.length).split(', ').every((k) => cantMake.has(k))).map((r) => `- ${r}`).join('\n');
   body = (!autoMergeOn
     ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok

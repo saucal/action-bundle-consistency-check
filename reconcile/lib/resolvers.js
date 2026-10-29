@@ -13,7 +13,10 @@ function makeResolvers(o = {}) {
   const { runner, cwd = '.' } = o;
 
   async function wpackagist(kind, slug) {
-    const url = `https://api.wordpress.org/${kind}s/info/1.0/${slug}.json`;
+    // themes/info/1.0/<slug>.json 404s for every theme; only the 1.2 query API serves themes.
+    const url = kind === 'theme'
+      ? `https://api.wordpress.org/themes/info/1.2/?action=theme_information&request%5Bslug%5D=${encodeURIComponent(slug)}`
+      : `https://api.wordpress.org/${kind}s/info/1.0/${slug}.json`;
     try {
       const r = await f(url);
       if (!r.ok) return null;
