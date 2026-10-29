@@ -9,6 +9,7 @@ const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
+const { splitHeal } = require('./lib/split-heal');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -239,15 +240,15 @@ async function closeStale(repo, branch, why) {
     const runOnce = (only, p = pending) => reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck, only, pending: p || undefined });
     const supersededKeys = (r) => r.classified.filter((c) => c.category === 'superseded').map((c) => c.key);
     result = await runOnce();
-    // Mixed heal: merge the part that needs no review now; the rest is deferred, and the next run
-    // (which then sees only that) opens a PR for it. Start again from the clean branch tip, undoing
-    // only what this run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
+    // Mixed heal (see splitHeal). Start again from the clean branch tip, undoing only what a run
+    // wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
     if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
-      core.info(`Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`);
-      await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
-      // -x within these paths only: adopted dirs are usually gitignored (plugins/).
-      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
-      result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
+      result = await splitHeal(result, { runOnce, log: core.info, stage: (r) => stageOutputs(cwd, r, isTracked),
+        undo: async (r) => {
+          await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
+          // -x within these paths only: adopted dirs are usually gitignored (plugins/).
+          await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(r.trackedPaths || []), ...(r.adoptedPaths || [])], cwd);
+        } });
     }
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo
