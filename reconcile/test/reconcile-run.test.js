@@ -552,6 +552,18 @@ test('split: rerun with only the eligible items -> auto-merge, the held item unt
   assert.ok(req['wpackagist-plugin/hello-dolly'], 'eligible item applied');
 });
 
+
+test('split: the rerun defers only what run 1 could heal; drift it never could keeps its own advice', async () => {
+  const f = mixedFixture();
+  f.manifestText += 'deleting notes.txt\n';
+  const res = await reconcileRun({ ...f, resolvers, runner: fakeRunner(), vulnCheck: vulnerableAdd, only: new Set(['hello-dolly']) });
+  const notes = res.classified.find((c) => c.key === 'notes.txt');
+  assert.strictEqual(notes.category, 'unknown', 'not promised to a next-run PR it will never get');
+  assert.strictEqual(res.classified.find((c) => c.key === 'code-snippets').category, 'deferred');
+  assert.strictEqual(res.outcome, 'partial');
+  assert.strictEqual(res.autoMerge.ok, true, 'the part run 1 chose still merges: ' + res.autoMerge.reasons.join(' | '));
+  assert.ok(res.autoMerge.pending.includes('/notes.txt'), JSON.stringify(res.autoMerge.pending));
+});
 test('split: a pending single-file plugin is a file path, a directory plugin keeps its slash', async () => {
   const sourceDir = tmpSource();
   const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent',

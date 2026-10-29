@@ -73,3 +73,8 @@ test('already in the branch: no PR wording, says what this run does', () => {
   assert.match(onlyOpen, /No repo change would bring `main` closer to the server, so there's no PR\. 1 need a decision/);
   assert.doesNotMatch(onlyOpen, /already has|### Already/);
 });
+
+test('a deferred item says why run 1 held it', () => {
+  const body = reportBody([...classified, { key: 'query-monitor', category: 'deferred', recoverable: false, held: 'known vulnerability at v3.15.0 — CVE-2026-1' }], { ref: 'main', runUrl: 'u' });
+  assert.match(body, /`query-monitor` — left out of this PR for review \(known vulnerability at v3\.15\.0 — CVE-2026-1\); the next run opens a PR for it\./);
+});
