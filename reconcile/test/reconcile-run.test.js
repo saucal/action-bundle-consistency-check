@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { reconcileRun } = require('../lib/reconcile-run');
+const { reconcileRun, firstComposerError } = require('../lib/reconcile-run');
 
 function tmpSource(require = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'src-'));
@@ -84,6 +84,24 @@ test('unavailable: composer update fails -> constraint reverted, flagged version
   assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), before);
   assert.ok(res.applied.includes('require:wpackagist-plugin/code-snippets:unavailable'), res.applied.join(','));
   assert.strictEqual(res.outcome, 'unrecoverable-only');
+});
+
+test('registry auth failure during update fails the run instead of reporting version-unavailable', async () => {
+  const sourceDir = tmpSource();
+  const runner = {
+    composer(args) {
+      return args[0] === 'install' ? { code: 0, stdout: '', stderr: '' }
+        : { code: 1, stdout: '', stderr: 'The "https://packages.example.com/satispress/packages.json" URL required authentication (HTTP 401).' };
+    },
+  };
+  await assert.rejects(
+    reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner }),
+    /could not reach or authenticate a repository while resolving wpackagist-plugin\/code-snippets/
+  );
+});
+
+test('firstComposerError surfaces a registry auth line', () => {
+  assert.match(firstComposerError('Usage: update [options]\nThe "https://x/packages.json" URL required authentication (HTTP 401).\nhelp'), /HTTP 401/);
 });
 
 test('existing RANGE constraint is NOT bumped; exact server version installed via --with', async () => {
