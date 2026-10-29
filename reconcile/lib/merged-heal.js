@@ -17,4 +17,15 @@ function findMergedHeal(logOut, ref) {
 /** A commit message's "Self-heal-pending:" paths, one per line. */
 const pendingOf = (message) => String(message).split('\n').filter((l) => l.startsWith('Self-heal-pending: ')).map((l) => l.slice(19).trim()).join('\n');
 
-module.exports = { findMergedHeal, pendingOf };
+/**
+ * Items the heal on the tip (run A) recovers that the heal on the deployed commit (run B) does not:
+ * run B is what gets built and recorded, so pushing anyway would record a parity commit without them.
+ * Run A's superseded items are not recoverable there, so they never count.
+ * @returns {object[]} run B's entry for each (or run A's when run B has none)
+ */
+function lostInRunB(tipClassified, classified) {
+  const b = new Map(classified.map((c) => [c.key, c]));
+  return tipClassified.filter((c) => c.recoverable && !(b.get(c.key) || {}).recoverable).map((c) => b.get(c.key) || c);
+}
+
+module.exports = { findMergedHeal, pendingOf, lostInRunB };

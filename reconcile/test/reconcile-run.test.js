@@ -686,3 +686,27 @@ test('unavailable: the remediation names the server header version, not the fall
   assert.strictEqual(c.category, 'version-unavailable');
   assert.match(c.remediation, /^v4\.0\.0-dev2 on the server/);
 });
+
+test('deployed-commit heal: an item the tip heal recovers but run B cannot install is reported lost, with composer\'s output', async () => {
+  const { lostInRunB } = require('../lib/merged-heal');
+  const manifestText = 'deleting plugins/code-snippets/code-snippets.php\n';
+  const tip = await reconcileRun({ sourceDir: tmpSource(), treeRoot: '/nonexistent', manifestText, resolvers, runner: fakeRunner() });
+  const failing = { composer(args) { return { code: args[0] === 'install' ? 0 : 1, stdout: '', stderr: args[0] === 'install' ? '' : 'HTTP 401 Unauthorized' }; } };
+  const runB = await reconcileRun({ sourceDir: tmpSource(), treeRoot: '/nonexistent', manifestText, resolvers, runner: failing, only: new Set(['code-snippets']) });
+  const lost = lostInRunB(tip.classified, runB.classified);
+  assert.deepStrictEqual(lost.map((c) => c.key), ['code-snippets']);
+  assert.strictEqual(lost[0].category, 'version-unavailable');
+  assert.match(lost[0].composerOutput || '', /401/);
+});
+
+test('deployed-commit heal: a superseded item it fails to re-heal stays pending, not a human hold', async () => {
+  const clean = async (items) => items.map(() => ({ matches: [] }));
+  const runner = { composer(args) { return { code: args.includes('wpackagist-plugin/code-snippets') ? 1 : 0, stdout: '', stderr: '' }; } };
+  const res = await reconcileRun({ sourceDir: tmpSource(), treeRoot: '/nonexistent', resolvers, runner, vulnCheck: clean,
+    manifestText: 'deleting plugins/code-snippets/code-snippets.php\ndeleting plugins/hello-dolly/hello.php\n',
+    only: new Set(['code-snippets', 'hello-dolly']), supersededKeys: new Set(['code-snippets']) });
+  assert.strictEqual(res.classified.find((x) => x.key === 'code-snippets').recoverable, false);
+  assert.ok(!res.autoMerge.reasons.some((r) => /needs a human/.test(r)), res.autoMerge.reasons.join(' | '));
+  assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
+  assert.ok(res.autoMerge.pending.includes('/plugins/code-snippets/'), res.autoMerge.pending.join(','));
+});

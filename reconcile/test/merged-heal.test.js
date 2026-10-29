@@ -26,3 +26,20 @@ test('reads the Self-heal-pending paths of a commit message', () => {
   assert.strictEqual(pendingOf(msg), '/w3tc-config/master.php\n/plugins/payoneer-checkout/');
   assert.strictEqual(pendingOf('no lines'), '');
 });
+
+test('lostInRunB: what the tip heal recovers and the deployed-commit heal does not, with run B\'s entry', () => {
+  const { lostInRunB } = require('../lib/merged-heal');
+  const tip = [
+    { key: 'a', recoverable: true },
+    { key: 'b', recoverable: true },
+    { key: 'c', recoverable: true },
+    { key: 'd', recoverable: false, category: 'superseded' },
+  ];
+  const b = [
+    { key: 'a', recoverable: true },
+    { key: 'b', recoverable: false, category: 'version-unavailable', composerOutput: '401' },
+    { key: 'd', recoverable: false, category: 'version-unavailable' },
+  ];
+  assert.deepStrictEqual(lostInRunB(tip, b), [b[1], tip[2]]);
+  assert.deepStrictEqual(lostInRunB(tip, tip), []);
+});
