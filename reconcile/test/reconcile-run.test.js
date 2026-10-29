@@ -503,6 +503,25 @@ test('removed: a plugin gone from the server drops its require (and is auto-merg
   assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
 });
 
+test('removed: a plugin gone from the server also drops its patches (entry, file, relock)', async () => {
+  const sourceDir = tmpSource({ 'wpackagist-plugin/code-snippets': '>=3.0' });
+  const cjPath = path.join(sourceDir, 'composer.json');
+  const cj0 = JSON.parse(fs.readFileSync(cjPath, 'utf8'));
+  cj0.extra = { patches: { 'wpackagist-plugin/code-snippets': [{ description: 'Reconciled from server drift', url: './patches/code-snippets.patch' }] } };
+  fs.writeFileSync(cjPath, JSON.stringify(cj0, null, 4) + '\n');
+  fs.mkdirSync(path.join(sourceDir, 'patches'));
+  fs.writeFileSync(path.join(sourceDir, 'patches/code-snippets.patch'), '--- a\n+++ b\n');
+  const runner = fakeRunner();
+  const res = await reconcileRun({ sourceDir, treeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'tree-')),
+    manifestText: 'plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+  const cj = JSON.parse(fs.readFileSync(cjPath, 'utf8'));
+  assert.strictEqual(cj.require['wpackagist-plugin/code-snippets'], undefined);
+  assert.ok(!(cj.extra && 'patches' in cj.extra), JSON.stringify(cj.extra));
+  assert.ok(!fs.existsSync(path.join(sourceDir, 'patches/code-snippets.patch')), 'patch file removed');
+  assert.ok(runner.calls.some((c) => c.args[0] === 'patches-relock'), 'patches relocked');
+  assert.ok(res.applied.includes('patches-dropped:wpackagist-plugin/code-snippets'), res.applied.join(','));
+});
+
 // --- split: merge what needs no review now, leave the rest for the next run's PR --------------
 function mixedFixture() {
   const f = trackedFixture("<?php // v1 with a server fix\n");
