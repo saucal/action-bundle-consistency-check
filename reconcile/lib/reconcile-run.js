@@ -575,7 +575,8 @@ async function reconcileRun(o) {
   // Superseded on the tip: the deployed commit's heal failing on one leaves it pending, not held (the tip's version stands).
   const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category)
     && !(o.supersededKeys && o.supersededKeys.has(c.key)));
-  const pathOf = (c) => (c.root ? `/${c.root}/` : (c.key === 'wordpress-core' ? null : `/${c.key}`));
+  // A .php component root is a single-file plugin; a directory root is a slug and gets the trailing slash.
+  const pathOf = (c) => (c.root ? (/\.php$/.test(c.root) ? `/${c.root}` : `/${c.root}/`) : (c.key === 'wordpress-core' ? null : `/${c.key}`));
   const pending = classified.filter((c) => !eligible.includes(c.key)).map(pathOf).filter(Boolean);
   // What this PR leaves on the server as it is (a hand-merged PR carries it all, held items included).
   const open = classified.filter((c) => !c.recoverable).map(pathOf).filter(Boolean);
