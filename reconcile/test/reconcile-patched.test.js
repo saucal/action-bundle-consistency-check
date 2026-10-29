@@ -128,3 +128,23 @@ test('reconcilePatched: a version gap is a mismatch, unless allowed: then a mark
   const entry = JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8')).extra.patches['saucal/fakeplug'][0];
   assert.match(entry.description, /^Bridges v1\.0\.0 → v2\.0\.0-dev2/);
 });
+
+test('reconcilePatched: a bridge that also carries code names its local edits; a header-only one does not', async () => {
+  const pristineFiles = { 'fakeplug.php': '<?php\n/**\n * Plugin Name: fakeplug\n * Version: 1.0.0\n */\n' };
+  const run = async (serverText) => {
+    const serverDir = mkdir('server-');
+    fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), serverText);
+    const projectDir = scaffoldProject();
+    const res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, allowVersionGap: true, runner: makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles }) });
+    return { res, entry: JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8')).extra.patches['saucal/fakeplug'][0] };
+  };
+
+  let { res, entry } = await run('<?php\n/**\n * Plugin Name: fakeplug\n * Version: 1.0.1\n */\nfix_one();\nfix_two();\n');
+  assert.strictEqual(res.action, 'bridged');
+  assert.deepStrictEqual(res.localEdits, { lines: 2, files: ['plugins/fakeplug/fakeplug.php'] });
+  assert.strictEqual(entry.description, 'Bridges v1.0.0 → v1.0.1 + local edits (2 lines) (no published release has it)');
+
+  ({ res, entry } = await run('<?php\n/**\n * Plugin Name: fakeplug\n * Version: 1.0.1\n */\n'));
+  assert.deepStrictEqual(res.localEdits, { lines: 0, files: [] });
+  assert.strictEqual(entry.description, 'Bridges v1.0.0 → v1.0.1 (no published release has it)');
+});

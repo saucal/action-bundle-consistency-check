@@ -44,6 +44,7 @@ async function reconcilePatched(o) {
   const bridge = installed !== server;
   if (bridge && !(o.allowVersionGap && installed && server)) return { action: 'version-mismatch', installed, server };
   if (o.ensurePatchSupport && !(await o.ensurePatchSupport())) return { action: 'patch-unsupported' };
+  const edits = bridge ? localEdits(patch) : null;
 
   // 3. Write patch + register in composer.json.
   const patchesDir = path.join(o.projectDir, 'patches');
@@ -54,7 +55,9 @@ async function reconcilePatched(o) {
   const composerText = fs.readFileSync(composerPath, 'utf8');
   const composer = JSON.parse(composerText);
   const { composer: next } = upsertExtraPatches(composer, o.pkg, {
-    description: bridge ? `${BRIDGE}v${installed} → v${server} (no published release has it)` : `Reconciled from server drift for ${o.slug}`,
+    description: bridge
+      ? `${BRIDGE}v${installed} → v${server}${edits.files.length ? ` + local edits (${edits.lines} lines)` : ''} (no published release has it)`
+      : `Reconciled from server drift for ${o.slug}`,
     url: patchFile,
     depth: 2,
   });
@@ -64,7 +67,26 @@ async function reconcilePatched(o) {
   await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
   await o.runner.composer(['patches-repatch'], { cwd: o.projectDir });
 
-  return { action: bridge ? 'bridged' : 'patched', patchFile, installed, server };
+  return bridge ? { action: 'bridged', patchFile, installed, server, localEdits: edits } : { action: 'patched', patchFile, installed, server };
+}
+
+/**
+ * What a patch changes besides WordPress version header lines (`Version:` / `Stable tag:`): the count
+ * of added/removed lines and the files they're in (a binary change counts its file, not its lines).
+ * A bridge with none is a version bump only; one with some carries code that lifting the pin drops.
+ */
+function localEdits(patchText) {
+  let lines = 0;
+  const files = [];
+  for (const chunk of patchText.split(/^(?=diff --git )/m)) {
+    const hunks = chunk.includes('\n@@ ') ? chunk.slice(chunk.indexOf('\n@@ ')) : ''; // past the ---/+++ file header
+    const n = hunks.split('\n').filter((l) => /^[-+]/.test(l) && !/^[-+][\s*#/]*(?:Version|Stable tag)\s*:/i.test(l)).length;
+    if (!n && !/^(?:GIT binary patch|Binary files )/m.test(chunk)) continue;
+    lines += n;
+    const file = chunk.match(/^\+\+\+ (?!\/dev\/null$)(.+)$/m) || chunk.match(/^--- (.+)$/m) || chunk.match(/^diff --git \S+ (.+)$/m);
+    if (file) files.push(file[1]);
+  }
+  return { lines, files };
 }
 
 // A bridge patch's description starts with this: the next version move drops it (see reconcile-run).

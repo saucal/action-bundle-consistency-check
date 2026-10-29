@@ -468,9 +468,11 @@ test('unavailable: server version exceeds anything published -> newest published
   assert.strictEqual(c.verified, true, 'the bridged install matches the server');
   const after = JSON.parse(read(composerPath));
   assert.strictEqual(after.require['saucal/futureplug'], '1.0.0', 'base pinned exactly');
-  assert.match(after.extra.patches['saucal/futureplug'][0].description, /^Bridges v1\.0\.0 → v2\.0\.0/);
+  // The server also changed a code line ('// future' → '// future, two'): named, not passed off as a version bump.
+  assert.match(after.extra.patches['saucal/futureplug'][0].description, /^Bridges v1\.0\.0 → v2\.0\.0 \+ local edits \(\d+ lines\)/);
+  assert.match(c.remediation, /with local edits \(\d+ lines in [^)]*plugins\/futureplug\/futureplug\.php[^)]*\) plus the version bump to v2\.0\.0.*Lifting the pin drops those edits/);
   assert.ok(res.applied.includes('require:saucal/futureplug:bridge-base'), `applied: ${res.applied}`);
-  assert.ok(res.autoMerge.reasons.some((x) => /futureplug: bridges to v2\.0\.0/.test(x)), 'held for a human');
+  assert.ok(res.autoMerge.reasons.some((x) => /^futureplug: bridges to v2\.0\.0 and carries \d+ lines of local edits in .*futureplug\.php — review$/.test(x)), `held: ${res.autoMerge.reasons}`);
   assert.strictEqual((await runner.composer(['validate', '--no-check-all', '--no-check-publish', '--check-lock'], { cwd: dir })).code, 0, 'lock in sync');
 });
 

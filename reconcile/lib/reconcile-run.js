@@ -362,10 +362,14 @@ async function reconcileRun(o) {
       composer = upsertRequire(JSON.parse(text), c.composerPackage, res.installed).composer;
       fs.writeFileSync(composerPath, serializeComposer(composer, text));
       c.bridged = { from: res.installed, to: res.server };
+      c.localEdits = res.localEdits;
     }
     if (!res.patchFile) continue;
     c.patchFile = res.patchFile;
-    c.remediation = c.bridged
+    const edits = c.bridged && c.localEdits && c.localEdits.files.length ? `${c.localEdits.lines} lines in ${c.localEdits.files.join(', ')}` : '';
+    c.remediation = c.bridged && edits
+      ? `v${c.bridged.to} on the server, which no published release has → pinned at v${c.bridged.from} (the newest published) with local edits (${edits}) plus the version bump to v${c.bridged.to}, both in \`${res.patchFile.replace(/^\.\//, '')}\`. Lifting the pin drops those edits: carry them over before the server moves to a release.`
+      : c.bridged
       ? `v${c.bridged.to} on the server, which no published release has → pinned at v${c.bridged.from} (the newest published), with \`${res.patchFile.replace(/^\.\//, '')}\` bridging the rest. When the server moves to a release, the next check lifts the pin and drops the patch.`
       : `v${c.version || '?'} with local edits on the server → locked at v${c.version || '?'}, edits kept in \`${res.patchFile.replace(/^\.\//, '')}\`.`;
     const patchText = fs.readFileSync(path.join(o.sourceDir, res.patchFile), 'utf8');
@@ -569,8 +573,12 @@ async function reconcileRun(o) {
     if (c.delta && c.delta.holds.length) hold(c, `${c.key}: ${[...new Set(c.delta.holds.map((h) => h.rule))].join(', ')}`);
     if (pendingHolds.has(c.key)) hold(c, pendingHolds.get(c.key));
     // A patch that changes the version the site runs never merges unattended.
-    if (c.bridged) hold(c, `${c.key}: bridges to v${c.bridged.to}, which no published release has — confirm the site should run it`);
-    else if (c.patchFile && c.editsVersion) hold(c, `${c.key}: its patch changes the plugin's version header — confirm the site should run it`);
+    if (c.bridged) {
+      const e = c.localEdits;
+      hold(c, e && e.files.length
+        ? `${c.key}: bridges to v${c.bridged.to} and carries ${e.lines} lines of local edits in ${e.files.join(', ')} — review`
+        : `${c.key}: bridges to v${c.bridged.to}, which no published release has — confirm the site should run it`);
+    } else if (c.patchFile && c.editsVersion) hold(c, `${c.key}: its patch changes the plugin's version header — confirm the site should run it`);
     if (o.supersededKeys && o.supersededKeys.has(c.key) && c.patchFile) {
       hold(c, `${c.key}: the server's edits to it would be dropped by the version in commits not yet deployed — review`);
     }
