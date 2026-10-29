@@ -552,6 +552,17 @@ test('split: rerun with only the eligible items -> auto-merge, the held item unt
   assert.ok(req['wpackagist-plugin/hello-dolly'], 'eligible item applied');
 });
 
+test('split: a pending single-file plugin is a file path, a directory plugin keeps its slash', async () => {
+  const sourceDir = tmpSource();
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent',
+    manifestText: 'deleting plugins/hello-dolly/hello.php\ndeleting plugins/code-snippets/code-snippets.php\ndeleting plugins/hello.php\n',
+    resolvers, runner: fakeRunner(), vulnCheck: async (i) => i.map(() => ({ matches: [] })), only: new Set(['hello-dolly']) });
+  const p = res.autoMerge.pending;
+  assert.ok(p.includes('/plugins/hello.php'), JSON.stringify(p));
+  assert.ok(!p.includes('/plugins/hello.php/'), JSON.stringify(p));
+  assert.ok(p.includes('/plugins/code-snippets/'), JSON.stringify(p));
+});
+
 test('split: junk drift does not block a heal; its path is pending for the checks', async () => {
   const sourceDir = tmpSource();
   const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/hello-dolly/hello.php\ndeleting debug-trace.log\n',
