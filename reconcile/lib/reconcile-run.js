@@ -514,10 +514,11 @@ async function reconcileRun(o) {
 
   // Pass 5 — security scan of everything this PR would take from the server WITHOUT a registry
   // behind it: patch residuals (added lines only), adopted/unknown/unverified components and loose
-  // files. A version a registry reproduces byte-for-byte has provenance and is not scanned.
+  // files. A version a registry reproduces byte-for-byte has provenance and is not scanned. Deferred
+  // and superseded items take nothing from the server here: the run that opens their PR scans them.
   const security = { critical: [], warn: [] };
   for (const c of classified) {
-    if (c.category === 'ignorable' || c.category === 'needs-redeploy') continue;
+    if (['ignorable', 'needs-redeploy', 'deferred', 'superseded'].includes(c.category)) continue;
     let hits = c.security;
     if (!hits && c.delta) hits = [...c.delta.critical.map((h) => ({ ...h, severity: 'critical' })), ...c.delta.holds.map((h) => ({ ...h, severity: 'warn' }))];
     else if (!hits && (String(c.category).startsWith('adopted') || !(c.recoverable && c.verified === true))) hits = serverHits(c, o.treeRoot);

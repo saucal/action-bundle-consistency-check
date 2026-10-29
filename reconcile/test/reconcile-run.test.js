@@ -710,3 +710,30 @@ test('deployed-commit heal: a superseded item it fails to re-heal stays pending,
   assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
   assert.ok(res.autoMerge.pending.includes('/plugins/code-snippets/'), res.autoMerge.pending.join(','));
 });
+
+// --- Pass 5 scans only what this PR takes from the server ------------------------------------
+function deferredCriticalFixture() {
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  for (const slug of ['hello-dolly', 'code-snippets']) fs.mkdirSync(path.join(treeRoot, 'plugins', slug), { recursive: true });
+  // Shape of an obfuscated loader (assembled, not a working sample).
+  fs.writeFileSync(path.join(treeRoot, 'plugins/code-snippets/code-snippets.php'), "<?php\neval(base64_decode('ZWNobyAxOw=='));\n");
+  fs.writeFileSync(path.join(treeRoot, 'plugins/hello-dolly/hello.php'), '<?php // clean\n');
+  return { sourceDir: tmpSource(), treeRoot, manifestText: 'deleting plugins/hello-dolly/hello.php\ndeleting plugins/code-snippets/code-snippets.php\n',
+    resolvers, runner: fakeRunner(), vulnCheck: async (i) => i.map(() => ({ matches: [] })) };
+}
+
+test('security: a deferred item is not scanned and does not block the part that merges', async () => {
+  const res = await reconcileRun({ ...deferredCriticalFixture(), only: new Set(['hello-dolly']) });
+  assert.deepStrictEqual(res.security.critical, [], JSON.stringify(res.security));
+  const d = res.classified.find((x) => x.key === 'code-snippets');
+  assert.strictEqual(d.category, 'deferred');
+  assert.strictEqual(d.security, undefined);
+  assert.deepStrictEqual(res.autoMerge.eligible, ['hello-dolly'], res.autoMerge.reasons.join(' | '));
+});
+
+test('security: the same item inside `only` is scanned and flagged', async () => {
+  const res = await reconcileRun({ ...deferredCriticalFixture(), only: new Set(['code-snippets', 'hello-dolly']) });
+  assert.ok(res.security.critical.some((h) => h.key === 'code-snippets'), JSON.stringify(res.security));
+  assert.strictEqual(res.classified.find((x) => x.key === 'code-snippets').category, 'suspicious');
+  assert.deepStrictEqual(res.autoMerge.eligible, []);
+});
