@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody } = require('./lib/report');
-const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
+const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
@@ -122,9 +122,6 @@ async function stageOutputs(cwd, result, isTracked) {
   if ((result.trackedPaths || []).length) await sh('git', ['add', '-A', '--', ...result.trackedPaths], { cwd });
   return (await sh('git', ['diff', '--cached', '--name-only'], { cwd })).out.split('\n').filter(Boolean);
 }
-
-/** Both runs scan the same server files: list each finding once. */
-const uniqHits = (hits) => [...new Map(hits.map((h) => [JSON.stringify(h), h])).values()];
 
 /**
  * Rewrite the open reconciliation PR's title and description. Returns its number, '' when no PR
@@ -322,12 +319,8 @@ async function closeStale(repo, branch, why) {
   // With undeployed commits the PR shows the tip's heal (run A); merging, verify and the built repo
   // follow the heal on the deployed commit (run B).
   const { classified, applied, verification } = tipResult || result;
-  // Both runs' security findings: run B assesses patches for superseded items run A never made.
-  const security = tipResult
-    ? { critical: uniqHits([...tipResult.security.critical, ...result.security.critical]), warn: uniqHits([...tipResult.security.warn, ...result.security.warn]) }
-    : result.security;
+  const { security, autoMerge } = combineRuns(tipResult, result);
   const { outcome } = result; // what gets built: run B when there are undeployed commits
-  const autoMerge = tipResult ? { ...result.autoMerge, reasons: [...new Set([...tipResult.autoMerge.reasons, ...result.autoMerge.reasons])] } : result.autoMerge;
   core.info(`Reconcile outcome: ${outcome} | applied: ${applied.join(', ') || '(none)'}`);
 
   // Where we land: verified = a deploy from this PR reproduces the server for that component;

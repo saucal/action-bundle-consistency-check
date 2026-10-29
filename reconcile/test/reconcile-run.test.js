@@ -767,3 +767,16 @@ test('security: the same item inside `only` is scanned and flagged', async () =>
   assert.strictEqual(res.classified.find((x) => x.key === 'code-snippets').category, 'suspicious');
   assert.deepStrictEqual(res.autoMerge.eligible, []);
 });
+
+test('undeployed commits: run A\'s compromise signals keep the combined verdict from auto-merging', async () => {
+  const { combineRuns } = require('../lib/merged-heal');
+  const runA = await reconcileRun(deferredCriticalFixture());
+  assert.ok(runA.security.critical.length, 'run A flags the item');
+  const f = deferredCriticalFixture();
+  const runB = await reconcileRun({ ...f, only: new Set(runA.classified.filter((c) => c.recoverable).map((c) => c.key)) });
+  assert.strictEqual(runB.autoMerge.ok, true, 'run B alone never sees the flagged item');
+  const { security, autoMerge } = combineRuns(runA, runB);
+  assert.ok(security.critical.length);
+  assert.strictEqual(autoMerge.ok, false);
+  assert.ok(autoMerge.reasons.some((r) => r.startsWith('signals of compromised code')), autoMerge.reasons.join(' | '));
+});
