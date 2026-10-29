@@ -8,6 +8,7 @@ const { reportBody } = require('./lib/report');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
+const { branchSame } = require('./lib/branch-same');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -452,9 +453,8 @@ async function closeStale(repo, branch, why) {
   // a new commit every run would dismiss any review on the PR (stale-review ruleset).
   const remote = await sh('git', ['fetch', 'origin', branch], { cwd });
   const rev = async (r) => (await sh('git', ['rev-parse', r], { cwd, silent: true })).out.trim();
-  const same = remote.code === 0 && await rev('FETCH_HEAD^{tree}') === await rev('HEAD^{tree}') && (buildSha
-    ? await rev('FETCH_HEAD^2') === baseSha && await rev('FETCH_HEAD^1^{tree}') === await rev(`${buildSha}^{tree}`) && await rev('FETCH_HEAD^1^') === pending.since
-    : await rev('FETCH_HEAD^') === baseSha);
+  const msg = async (r) => (await sh('git', ['log', '-1', '--format=%B', r], { cwd, silent: true })).out;
+  const same = remote.code === 0 && await branchSame({ rev, msg, baseSha, buildSha, since: buildSha && pending.since });
   if (same) {
     headSha = await rev('FETCH_HEAD');
     if (buildSha) buildSha = await rev('FETCH_HEAD^1');
