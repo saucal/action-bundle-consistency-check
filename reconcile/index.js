@@ -4,7 +4,7 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody, heldNote, undeployedNote, healCommitLine } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('./lib/report');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
@@ -283,8 +283,8 @@ async function closeStale(repo, branch, why) {
     } else if (result.classified.some((c) => c.recoverable)) {
       core.notice(`${ref} already carries every repo change, in commits not deployed yet: the next Deploy ships them. No PR.`);
     }
-    const open = result.classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length;
-    if (open) core.setFailed(`${open} item(s) still need a decision: see the job summary.`);
+    const open = remaining(result.classified);
+    if (open) core.setFailed(`Drift remains: ${open}. See the job summary.`);
     return;
   }
 
@@ -453,8 +453,6 @@ async function closeStale(repo, branch, why) {
   core.setOutput('branch', branch);
 
   // 5. Keep the job RED when unrecoverable drift remains (so Slack/ServiceApp alerting fires).
-  const hasUnrecoverable = classified.some((c) => !c.recoverable && c.category !== 'ignorable');
-  if (hasUnrecoverable) {
-    core.setFailed('Reconciliation ran, but unrecoverable drift remains — see PR body.');
-  }
+  const left = remaining(classified);
+  if (left) core.setFailed(`Reconciliation ran, but drift remains: ${left} — see PR body.`);
 })().catch((e) => core.setFailed(e.stack || String(e)));

@@ -3,6 +3,9 @@
 const isPatched = (c) => c.category === 'patched' || c.category === 'patched-candidate';
 const isAdopted = (c) => c.category === 'adopted' || c.category === 'adopted-lossy';
 const OUTSIDE = new Set(['ignorable', 'compiled-asset', 'sensitive']);
+// Left out now, but nothing to decide: the next run opens their PR, or the next Deploy ships the repo's version.
+const LATER = new Set(['deferred', 'superseded']);
+const WAIT = "wait for the next run's PR or the next Deploy";
 // The entry already names the item: drop a leading "<name>: " from its text.
 const text = (c) => {
   const r = String(c.remediation || '');
@@ -51,7 +54,9 @@ function reportBody(classified, meta) {
     const ok = inPr.filter((c) => c.verified).length; // removals have nothing left to compare: never verified
     const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)`
       : ok && ok === inPr.length ? ' (each checked against the server\'s files ✅)' : ok ? ` (${ok} checked against the server's files ✅)` : '';
-    const open = notCovered ? ` ${notCovered} need a decision (below), and the check stays red until they're made.` : '';
+    const later = leftOut.filter((c) => LATER.has(c.category)).length;
+    const decide = notCovered - later;
+    const open = (decide ? ` ${decide} need a decision (below), and the check stays red until they're made.` : '') + (later ? ` ${later} ${WAIT} (below).` : '');
     L.push(meta.already && !inPr.length
       ? `No repo change would bring \`${meta.ref}\` closer to the server, so there's no PR.${open}`
       : meta.already
@@ -60,7 +65,7 @@ function reportBody(classified, meta) {
           : `They came in with \`${meta.already.slice(0, 7)}\`, whose build was never recorded in the built repo: this run records it there, without deploying.`) + open
       : `The server no longer matches \`${meta.ref}\`: ${total} repo change(s) would make them match. `
         + (!notCovered ? `This PR makes all of them${checked}.`
-          : `This PR makes ${inPr.length}${checked}; ${notCovered} need a decision (below), and the check stays red until they're made.`));
+          : `This PR makes ${inPr.length}${checked};${open}`));
   }
   L.push('', `From the [consistency check run](${meta.runUrl}).`, '');
 
@@ -85,6 +90,13 @@ function reportBody(classified, meta) {
   return L.join('\n');
 }
 
+/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). */
+function remaining(classified) {
+  const left = classified.filter((c) => !c.recoverable && c.category !== 'ignorable');
+  const later = left.filter((c) => LATER.has(c.category)).length;
+  return [left.length - later && `${left.length - later} item(s) need a decision`, later && `${later} item(s) ${WAIT}`].filter(Boolean).join(', ');
+}
+
 /** The held PR's auto-merge line: its reasons as a list, else where the body lists them. */
 const heldNote = (reasonLines) => `**Auto-merge:** held for a human${reasonLines ? `:\n\n${reasonLines}` : " — see “Repo changes this PR can't make”."}\n\n`;
 
@@ -101,4 +113,4 @@ const healCommitLine = (gated) => (gated
   ? 'Brings the repo in line with the server; verified to reproduce it before merging.'
   : 'Brings the repo in line with the server. Merged by hand, so not verified beforehand: the Deploy this merge triggers records it only if its dry run changes nothing.');
 
-module.exports = { reportBody, heldNote, undeployedNote, healCommitLine };
+module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, remaining };
