@@ -48,7 +48,9 @@ function reportBody(classified, meta) {
   const total = inPr.length + notCovered;
   const L = [`## Make \`${meta.ref}\` match the server`, ''];
   if (total) {
-    const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)` : inPr.some((c) => c.verified) ? ' (each checked against the server\'s files ✅)' : '';
+    const ok = inPr.filter((c) => c.verified).length; // removals have nothing left to compare: never verified
+    const checked = residual.length ? `; ${residual.length} still differ after the change (⚠️)`
+      : ok && ok === inPr.length ? ' (each checked against the server\'s files ✅)' : ok ? ` (${ok} checked against the server's files ✅)` : '';
     const open = notCovered ? ` ${notCovered} need a decision (below), and the check stays red until they're made.` : '';
     L.push(meta.already && !inPr.length
       ? `No repo change would bring \`${meta.ref}\` closer to the server, so there's no PR.${open}`
@@ -83,4 +85,20 @@ function reportBody(classified, meta) {
   return L.join('\n');
 }
 
-module.exports = { reportBody };
+/** The held PR's auto-merge line: its reasons as a list, else where the body lists them. */
+const heldNote = (reasonLines) => `**Auto-merge:** held for a human${reasonLines ? `:\n\n${reasonLines}` : " — see “Repo changes this PR can't make”."}\n\n`;
+
+/**
+ * Banner of a PR built on the last deployed commit. open: the repo changes it can't make — while
+ * any remain, the check still fails, so the next Deploy does not go through either.
+ */
+const undeployedNote = (ref, pending, open) => `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). `
+  + `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, `
+  + (open ? `which the consistency check still stops until the ${open} repo change(s) this PR can't make are dealt with.\n\n` : 'which then goes through.\n\n');
+
+/** The heal commit's explanation: only a PR the gate merges was verified before merging. */
+const healCommitLine = (gated) => (gated
+  ? 'Brings the repo in line with the server; verified to reproduce it before merging.'
+  : 'Brings the repo in line with the server. Merged by hand, so not verified beforehand: the Deploy this merge triggers records it only if its dry run changes nothing.');
+
+module.exports = { reportBody, heldNote, undeployedNote, healCommitLine };

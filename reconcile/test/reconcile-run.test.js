@@ -207,12 +207,27 @@ test('adopt: premium-flag component is vendored into source when the flag is on'
   const c = res.classified.find((x) => x.key === 'premiumplug');
   assert.strictEqual(c.category, 'adopted');
   assert.strictEqual(c.recoverable, true);
+  assert.match(c.remediation, /\(1 file\) — not available/);
   assert.ok(fs.existsSync(path.join(sourceDir, 'plugins/premiumplug/premiumplug.php')), 'vendored into source');
   assert.deepStrictEqual(res.adoptedPaths, ['plugins/premiumplug']);
   assert.ok(res.applied.includes('adopt:premiumplug'), res.applied.join(','));
   // Verify pass: the vendored source now byte-matches the captured server state → reproduces it.
   assert.strictEqual(c.verified, true);
   assert.deepStrictEqual(res.verification, { verified: 1, verifiable: 1, residual: 0 });
+});
+
+test('adopt: the report names symlinks and large files it vendored', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = premiumTree();
+  const dir = path.join(treeRoot, 'plugins', 'premiumplug');
+  fs.symlinkSync('premiumplug.php', path.join(dir, 'link'));
+  fs.writeFileSync(path.join(dir, 'big.bin'), Buffer.alloc(1024 * 1024));
+  const runner = { composer(args) { return { code: args[0] === 'show' ? 1 : 0, stdout: '', stderr: '' }; } };
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner, adopt: true });
+  const c = res.classified.find((x) => x.key === 'premiumplug');
+  assert.match(c.remediation, /\(3 files\)/);
+  assert.match(c.remediation, /Symlinks, committed as links: `plugins\/premiumplug\/link`\./);
+  assert.match(c.remediation, /Files of 1 MB or more: `plugins\/premiumplug\/big\.bin`\./);
 });
 
 test('verify: adopted-lossy (a non-manifest sensitive file skipped) reports residual — does NOT fully converge', async () => {
