@@ -26,7 +26,7 @@ test('stageOutputs: an item git refuses to stage is counted and named, never rep
   assert.match(body, /`customx` — .*could not be staged/);
 });
 
-test('stageOutputs: adopted roots are force-added, tracked files are not', async () => {
+test('stageOutputs: adopted roots and tracked files are force-added', async () => {
   const result = {
     classified: [
       { key: 'newx', category: 'adopted', recoverable: true, adoptedRoot: 'plugins/newx' },
@@ -38,6 +38,6 @@ test('stageOutputs: adopted roots are force-added, tracked files are not', async
   const calls = [];
   await stageOutputs(os.tmpdir(), result, () => false, async (args) => { calls.push(args.join(' ')); return { code: 0, out: '' }; });
   assert.ok(calls.includes('add -f -- plugins/newx'), calls.join('\n'));
-  assert.ok(calls.includes('add -A -- plugins/customx/a.php'), calls.join('\n'));
+  assert.ok(calls.includes('add -A -f -- plugins/customx/a.php'), calls.join('\n'));
   assert.ok(result.classified.every((c) => c.recoverable));
 });
