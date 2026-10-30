@@ -13,7 +13,7 @@ const text = (c) => {
 // Drift this PR leaves alone, as the repo change that would match the server. Anything else keeps its own text.
 const IGNORE = '`SSH_IGNORE_LIST_EXTRA`';
 const LEFT_OUT = {
-  deferred: () => 'left out of this PR for review; the next run opens a PR for it.',
+  deferred: (c) => `left out of this PR for review${c.held ? ` (${c.held})` : ''}; the next run opens a PR for it.`,
   'needs-redeploy': (c) => (c.onServer
     ? `changed on the server, but the build adds it (composer or mu-plugins), so the repo has no copy to change. **To match:** make the change where it comes from, or add it to ${IGNORE} if the server's copy should stay as it is.`
     : c.onServer === false

@@ -32,7 +32,7 @@ const VERSION_CATEGORIES = new Set(['wpackagist-plugin', 'wpackagist-theme', 'sa
  * @param {(p:string)=>boolean} [o.isTracked] true for a path git tracks in source (or a dir holding some)
  * @param {(items:{type:string,slug:string,version:string}[])=>Promise<{matches:object[]}[]|null>} [o.vulnCheck]
  *   known vulnerabilities per item (ServiceApp vulns/match); null/throw = unavailable
- * @param {Set<string>} [o.only] apply only these item keys; every other item is deferred (left for
+ * @param {Set<string>} [o.only] apply only these item keys; every other recoverable item is deferred (left for
  *   the next run's review PR) — how a mixed heal merges its no-review part first
  * @param {{since:string, packages:Set<string>, files:string[], core:boolean}} [o.pending] what commits not
  *   yet deployed (since the last build's source) changed: a drifted version they also changed is
@@ -50,7 +50,8 @@ async function reconcileRun(o) {
 
   if (o.only) {
     for (const c of classified) {
-      if (!o.only.has(c.key) && c.category !== 'ignorable') {
+      // Only what this run could heal waits for the next run's PR; the rest keeps its own category and advice.
+      if (!o.only.has(c.key) && c.recoverable) {
         c.category = 'deferred';
         c.recoverable = false;
         c.remediation = `${c.key}: left for review — the next run opens a PR for it.`;
@@ -600,7 +601,7 @@ async function reconcileRun(o) {
   const eligible = critical ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
   // Superseded on the tip: the deployed commit's heal failing on one leaves it pending, not held (the tip's version stands).
   const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category)
-    && !(o.supersededKeys && o.supersededKeys.has(c.key)));
+    && !(o.supersededKeys && o.supersededKeys.has(c.key)) && !(o.only && !o.only.has(c.key))); // outside `only`: the caller already judged it
   // A .php component root is a single-file plugin; a directory root is a slug and gets the trailing slash.
   const pathOf = (c) => (c.root ? (/\.php$/.test(c.root) ? `/${c.root}` : `/${c.root}/`) : (c.key === 'wordpress-core' ? null : `/${c.key}`));
   const pending = classified.filter((c) => !eligible.includes(c.key)).map(pathOf).filter(Boolean);

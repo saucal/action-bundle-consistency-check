@@ -212,7 +212,11 @@ async function closeStale(repo, branch, why) {
       await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
       // -x within these paths only: adopted dirs are usually gitignored (plugins/).
       await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
+      const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
       result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
+      for (const c of result.classified.filter((x) => x.category === 'deferred')) {
+        c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+      }
     }
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo
