@@ -32,7 +32,7 @@ const VERSION_CATEGORIES = new Set(['wpackagist-plugin', 'wpackagist-theme', 'sa
  * @param {(p:string)=>boolean} [o.isTracked] true for a path git tracks in source (or a dir holding some)
  * @param {(items:{type:string,slug:string,version:string}[])=>Promise<{matches:object[]}[]|null>} [o.vulnCheck]
  *   known vulnerabilities per item (ServiceApp vulns/match); null/throw = unavailable
- * @param {Set<string>} [o.only] apply only these item keys; every other item is deferred (left for
+ * @param {Set<string>} [o.only] apply only these item keys; every other recoverable item is deferred (left for
  *   the next run's review PR) — how a mixed heal merges its no-review part first
  * @param {{since:string, packages:Set<string>, files:string[], core:boolean}} [o.pending] what commits not
  *   yet deployed (since the last build's source) changed: a drifted version they also changed is
@@ -50,7 +50,8 @@ async function reconcileRun(o) {
 
   if (o.only) {
     for (const c of classified) {
-      if (!o.only.has(c.key) && c.category !== 'ignorable') {
+      // Only what this run could heal waits for the next run's PR; the rest keeps its own category and advice.
+      if (!o.only.has(c.key) && c.recoverable) {
         c.category = 'deferred';
         c.recoverable = false;
         c.remediation = `${c.key}: left for review — the next run opens a PR for it.`;
@@ -83,6 +84,9 @@ async function reconcileRun(o) {
   const composerPath = path.join(o.sourceDir, 'composer.json');
   const hasComposer = fs.existsSync(composerPath);
   const originalComposerText = hasComposer ? fs.readFileSync(composerPath, 'utf8') : null;
+  const lockPath = path.join(o.sourceDir, 'composer.lock');
+  const readLock = () => { try { return fs.readFileSync(lockPath, 'utf8'); } catch { return null; } };
+  const originalLockText = readLock();
   let composer = originalComposerText ? JSON.parse(originalComposerText) : null;
   const applied = [];
 
@@ -471,9 +475,12 @@ async function reconcileRun(o) {
         c.category = res.skipped > 0 ? 'adopted-lossy' : 'adopted';
         c.recoverable = true;
         c.adoptedRoot = root;
-        c.remediation = res.skipped > 0
-          ? `Vendored ${c.key} into the repo (${res.files} files); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
-          : `Vendored ${c.key} into the repo (${res.files} files) — not available on wpackagist/SatisPress.`;
+        const count = `${res.files} file${res.files === 1 ? '' : 's'}`;
+        const named = (label, list) => (list.length ? ` ${label}: ${list.map((p) => `\`${p}\``).join(', ')}.` : '');
+        c.remediation = (res.skipped > 0
+          ? `Vendored ${c.key} into the repo (${count}); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
+          : `Vendored ${c.key} into the repo (${count}) — not available on wpackagist/SatisPress.`)
+          + named('Symlinks, committed as links', res.symlinks) + named('Files of 1 MB or more', res.large);
         adoptedPaths.push(root);
         applied.push(`adopt:${c.key}`);
       } catch (e) {
@@ -546,7 +553,13 @@ async function reconcileRun(o) {
   // composer.lock carries a hash of composer.json (extra included): any edit here — extra.patches,
   // extra.wordpress-core, a new require — must end with a hash refresh, or the build's
   // `composer validate` rejects the lock. --lock touches no versions.
-  if (o.runner && hasComposer && fs.readFileSync(composerPath, 'utf8') !== originalComposerText) {
+  // A rewrite that changes nothing (e.g. an add undone) keeps the original text: no reflow to commit.
+  if (hasComposer && JSON.stringify(JSON.parse(fs.readFileSync(composerPath, 'utf8'))) === JSON.stringify(JSON.parse(originalComposerText))) {
+    fs.writeFileSync(composerPath, originalComposerText);
+  }
+  // A solve mid-run may have rewritten the lock against an intermediate composer.json even though
+  // the final text is back to the original: refresh then too.
+  if (o.runner && hasComposer && (fs.readFileSync(composerPath, 'utf8') !== originalComposerText || readLock() !== originalLockText)) {
     const relock = await o.runner.composer(['update', '--lock', '--no-install', '--no-progress'], { cwd: o.sourceDir });
     if (relock.code !== 0) applied.push('composer:lock-refresh-failed');
   }
@@ -588,7 +601,7 @@ async function reconcileRun(o) {
   const eligible = critical ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
   // Superseded on the tip: the deployed commit's heal failing on one leaves it pending, not held (the tip's version stands).
   const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category)
-    && !(o.supersededKeys && o.supersededKeys.has(c.key)));
+    && !(o.supersededKeys && o.supersededKeys.has(c.key)) && !(o.only && !o.only.has(c.key))); // outside `only`: the caller already judged it
   // A .php component root is a single-file plugin; a directory root is a slug and gets the trailing slash.
   const pathOf = (c) => (c.root ? (/\.php$/.test(c.root) ? `/${c.root}` : `/${c.root}/`) : (c.key === 'wordpress-core' ? null : `/${c.key}`));
   const pending = classified.filter((c) => !eligible.includes(c.key)).map(pathOf).filter(Boolean);

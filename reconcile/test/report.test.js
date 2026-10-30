@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { reportBody } = require('../lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('../lib/report');
 
 const classified = [
   { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'Added wpackagist-plugin/code-snippets:>=3.6.5' },
@@ -72,4 +72,51 @@ test('already in the branch: no PR wording, says what this run does', () => {
   const onlyOpen = reportBody([items[1]], { ref: 'main', runUrl: 'u', already: true });
   assert.match(onlyOpen, /No repo change would bring `main` closer to the server, so there's no PR\. 1 need a decision/);
   assert.doesNotMatch(onlyOpen, /already has|### Already/);
+});
+
+test('deferred and superseded drift is not counted as needing a decision', () => {
+  const later = [
+    { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'x' },
+    { key: 'query-monitor', category: 'deferred', recoverable: false, remediation: 'x' },
+    { key: 'akismet', category: 'superseded', recoverable: false, remediation: 'x' },
+  ];
+  const body = reportBody(later, { ref: 'main', runUrl: 'u' });
+  assert.doesNotMatch(body, /need a decision/, body);
+  assert.match(body, /This PR makes 1; 2 wait for the next run's PR or the next Deploy \(below\)\./);
+  assert.strictEqual(remaining(later), "2 item(s) wait for the next run's PR or the next Deploy");
+  assert.strictEqual(remaining([...later, ...classified]), "2 item(s) need a decision, 2 item(s) wait for the next run's PR or the next Deploy");
+  assert.strictEqual(remaining(classified.slice(0, 1)), '');
+});
+
+test('a deferred item says why run 1 held it', () => {
+  const body = reportBody([...classified, { key: 'query-monitor', category: 'deferred', recoverable: false, held: 'known vulnerability at v3.15.0 — CVE-2026-1' }], { ref: 'main', runUrl: 'u' });
+  assert.match(body, /`query-monitor` — left out of this PR for review \(known vulnerability at v3\.15\.0 — CVE-2026-1\); the next run opens a PR for it\./);
+});
+
+test('an unverified removal next to a verified change: no "each checked"', () => {
+  const body = reportBody([
+    { key: 'ok', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/ok', remediation: 'add', verified: true },
+    { key: 'gone', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/gone', remediation: 'removed' },
+  ], { ref: 'main', runUrl: 'u' });
+  assert.match(body, /This PR makes all of them \(1 checked against the server's files ✅\)\./);
+  assert.doesNotMatch(body, /each checked/);
+});
+
+test('held line: reasons as a list after a colon, or a pointer to the body', () => {
+  assert.strictEqual(heldNote('- a\n- b'), '**Auto-merge:** held for a human:\n\n- a\n- b\n\n');
+  assert.match(heldNote(''), /^\*\*Auto-merge:\*\* held for a human — see “Repo changes this PR can't make”\.\n\n$/);
+});
+
+test('undeployed banner promises the Deploy goes through only when nothing is left to decide', () => {
+  const pending = { commits: 2, since: 'a'.repeat(40) };
+  assert.match(undeployedNote('main', pending, 0), /`main` has 2 commit\(s\) not deployed yet \(since `aaaaaaa`\).*until the next Deploy, which then goes through\.\n\n$/);
+  const open = undeployedNote('main', pending, 1);
+  assert.doesNotMatch(open, /goes through/);
+  assert.match(open, /which the consistency check still stops until the 1 repo change\(s\) this PR can't make are dealt with\./);
+});
+
+test('heal commit says "verified" only when the gate merges it', () => {
+  assert.match(healCommitLine(true), /verified to reproduce it before merging/);
+  assert.doesNotMatch(healCommitLine(false), /verified to reproduce/);
+  assert.match(healCommitLine(false), /Merged by hand, so not verified beforehand/);
 });
