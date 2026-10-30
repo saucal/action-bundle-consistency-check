@@ -620,7 +620,7 @@ test('update + patch: newer version on server with edits -> lock moves, residual
 });
 
 // --- adopted root under an ignored parent gains a new file on the server --------
-test('tracked root under a gitignored plugins/: a new server file git refuses is named as needing a decision, not reported as carried', async () => {
+test('tracked root under a gitignored plugins/: a new server file is staged (force-added like its adoption)', async () => {
   const { stageOutputs } = require('../../lib/stage');
   const { execFileSync } = require('child_process');
   const { dir } = makeProject({
@@ -650,12 +650,6 @@ test('tracked root under a gitignored plugins/: a new server file git refuses is
   const staged = await stageOutputs(dir, res, isTracked, async (args) => {
     try { return { code: 0, out: git(...args) }; } catch (e) { return { code: e.status || 1, out: `${e.stdout || ''}${e.stderr || ''}` }; }
   });
-  assert.ok(!staged.includes('plugins/customx/assets/blob.bin'), `staged: ${staged}`);
-  assert.strictEqual(c.recoverable, false);
-  assert.match(c.remediation, /could not be staged.*ignored/);
-  const { remaining, reportBody } = require('../../lib/report');
-  assert.strictEqual(remaining(res.classified), '1 item(s) need a decision');
-  const body = reportBody(res.classified, { ref: 'main', runUrl: 'u', already: true });
-  assert.doesNotMatch(body, /next Deploy ships them/);
-  assert.match(body, /`customx` — .*could not be staged/);
+  assert.ok(staged.includes('plugins/customx/assets/blob.bin'), `staged: ${staged}`);
+  assert.strictEqual(c.recoverable, true, c.remediation);
 });
