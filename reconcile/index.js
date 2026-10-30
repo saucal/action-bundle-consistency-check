@@ -4,7 +4,7 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine } = require('./lib/report');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
@@ -103,7 +103,7 @@ async function updatePr(repo, ref, branch, body) {
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
   // and requires `read:org`, which CI tokens usually lack.
-  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`]);
+  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`], { silent: true }); // the response is the whole PR as JSON
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
   core.setOutput('pr', num);
@@ -317,8 +317,7 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). ` +
-      `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, which then goes through.\n\n` + body;
+    body = undeployedNote(ref, pending, classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length) + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
@@ -354,7 +353,7 @@ async function closeStale(repo, branch, why) {
     ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
-      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : "see “Repo changes this PR can't make”."}\n\n`) + body;
+      : heldNote(reasonLines)) + body;
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -396,7 +395,7 @@ async function closeStale(repo, branch, why) {
   const committed = await sh('git', ['commit', '-m', tipResult
     ? [`Reconcile server drift on ${ref} [commit only]`, '', `Parity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`,
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')
-    : [`Reconcile server drift on ${ref} [commit only]`, '', 'Brings the repo in line with the server; verified to reproduce it before merging.',
+    : [`Reconcile server drift on ${ref} [commit only]`, '', healCommitLine(autoMergeOn && autoMerge && autoMerge.ok),
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
   if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
   let headSha = (await sh('git', ['rev-parse', 'HEAD'], { cwd })).out.trim();

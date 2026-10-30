@@ -83,6 +83,9 @@ async function reconcileRun(o) {
   const composerPath = path.join(o.sourceDir, 'composer.json');
   const hasComposer = fs.existsSync(composerPath);
   const originalComposerText = hasComposer ? fs.readFileSync(composerPath, 'utf8') : null;
+  const lockPath = path.join(o.sourceDir, 'composer.lock');
+  const readLock = () => { try { return fs.readFileSync(lockPath, 'utf8'); } catch { return null; } };
+  const originalLockText = readLock();
   let composer = originalComposerText ? JSON.parse(originalComposerText) : null;
   const applied = [];
 
@@ -471,9 +474,12 @@ async function reconcileRun(o) {
         c.category = res.skipped > 0 ? 'adopted-lossy' : 'adopted';
         c.recoverable = true;
         c.adoptedRoot = root;
-        c.remediation = res.skipped > 0
-          ? `Vendored ${c.key} into the repo (${res.files} files); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
-          : `Vendored ${c.key} into the repo (${res.files} files) — not available on wpackagist/SatisPress.`;
+        const count = `${res.files} file${res.files === 1 ? '' : 's'}`;
+        const named = (label, list) => (list.length ? ` ${label}: ${list.map((p) => `\`${p}\``).join(', ')}.` : '');
+        c.remediation = (res.skipped > 0
+          ? `Vendored ${c.key} into the repo (${count}); ${res.skipped} sensitive file(s) skipped — review whether they matter.`
+          : `Vendored ${c.key} into the repo (${count}) — not available on wpackagist/SatisPress.`)
+          + named('Symlinks, committed as links', res.symlinks) + named('Files of 1 MB or more', res.large);
         adoptedPaths.push(root);
         applied.push(`adopt:${c.key}`);
       } catch (e) {
@@ -546,7 +552,13 @@ async function reconcileRun(o) {
   // composer.lock carries a hash of composer.json (extra included): any edit here — extra.patches,
   // extra.wordpress-core, a new require — must end with a hash refresh, or the build's
   // `composer validate` rejects the lock. --lock touches no versions.
-  if (o.runner && hasComposer && fs.readFileSync(composerPath, 'utf8') !== originalComposerText) {
+  // A rewrite that changes nothing (e.g. an add undone) keeps the original text: no reflow to commit.
+  if (hasComposer && JSON.stringify(JSON.parse(fs.readFileSync(composerPath, 'utf8'))) === JSON.stringify(JSON.parse(originalComposerText))) {
+    fs.writeFileSync(composerPath, originalComposerText);
+  }
+  // A solve mid-run may have rewritten the lock against an intermediate composer.json even though
+  // the final text is back to the original: refresh then too.
+  if (o.runner && hasComposer && (fs.readFileSync(composerPath, 'utf8') !== originalComposerText || readLock() !== originalLockText)) {
     const relock = await o.runner.composer(['update', '--lock', '--no-install', '--no-progress'], { cwd: o.sourceDir });
     if (relock.code !== 0) applied.push('composer:lock-refresh-failed');
   }
