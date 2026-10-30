@@ -34,4 +34,20 @@ function lostInRunB(tipClassified, classified) {
   return tipClassified.filter((c) => c.recoverable && !(b.get(c.key) || {}).recoverable).map((c) => b.get(c.key) || c);
 }
 
-module.exports = { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB };
+/** Both runs scan the same server files: list each finding once. */
+const uniqHits = (hits) => [...new Map(hits.map((h) => [JSON.stringify(h), h])).values()];
+
+/**
+ * The security findings and auto-merge verdict of a heal: run B's alone, or with undeployed commits
+ * (tipResult = run A) both runs' findings — run B assesses patches for superseded items run A never
+ * made — and run B's verdict, never ok while either run found compromise signals.
+ */
+function combineRuns(tipResult, result) {
+  if (!tipResult) return { security: result.security, autoMerge: result.autoMerge };
+  const security = { critical: uniqHits([...tipResult.security.critical, ...result.security.critical]), warn: uniqHits([...tipResult.security.warn, ...result.security.warn]) };
+  const autoMerge = { ...result.autoMerge, ok: result.autoMerge.ok && !security.critical.length,
+    reasons: [...new Set([...tipResult.autoMerge.reasons, ...result.autoMerge.reasons])] };
+  return { security, autoMerge };
+}
+
+module.exports = { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns };
