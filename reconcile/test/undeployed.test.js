@@ -56,3 +56,13 @@ test('version changes still count; nothing pending when the tip is the deployed 
   const tip = r.commit({ 'composer.lock': { packages: [lock.packages[0], { name: 'vendor/b', version: '1.1.0' }] } }, 'bump b');
   assert.deepStrictEqual([...(await undeployed(r.since, r.dir, tip, 'main')).packages], ['vendor/b']);
 });
+
+test('counts work commits only: a merge-button merge is not a commit of its own', async () => {
+  const r = repo({ 'composer.json': withPatches({}), 'composer.lock': lock });
+  r.git('checkout', '-qb', 'feature');
+  r.commit({ 'README.md': 'feature\n' }, 'feature work');
+  r.git('checkout', '-q', 'main');
+  r.git('merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature');
+  const tip = r.git('rev-parse', 'HEAD');
+  assert.strictEqual((await undeployed(r.since, r.dir, tip, 'main')).commits, 1);
+});

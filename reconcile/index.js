@@ -220,7 +220,6 @@ async function closeStale(repo, branch, why) {
     // Every PR takes this shape, held ones too: merged by hand, a one-commit PR would record the tip
     // (undeployed commits included) as what the server runs.
     if (pending) {
-      core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
       tipResult = result;
       const tipStaged = await stageOutputs(cwd, result, isTracked);
       if (tipStaged.length) {
@@ -235,6 +234,7 @@ async function closeStale(repo, branch, why) {
         merged = { sha: findMergedHeal((await sh('git', ['log', '--no-merges', '--format=%H%x09%s', `${pending.since}..${baseSha}`], { cwd, silent: true })).out, ref) };
       }
       if (!merged) {
+        core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
         await must(['reset', '-q', '--hard'], cwd);
         await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
         await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);

@@ -47,7 +47,8 @@ async function undeployed(since, cwd, tip, ref, warn = () => {}) {
     packages: new Set([...[...a.keys(), ...b.keys()].filter((n) => a.get(n) !== b.get(n)), ...patched]),
     files,
     core: ((ja.extra || {})['wordpress-core'] || '') !== ((jb.extra || {})['wordpress-core'] || ''),
-    commits: Number((await git('rev-list', '--count', `${since}..${tip}`)).out.trim()) || 0,
+    // Work commits only: merge commits (a PR's merge button, an earlier heal's merge) bring no change of their own.
+    commits: Number((await git('rev-list', '--count', '--no-merges', `${since}..${tip}`)).out.trim()) || 0,
   };
 }
 
