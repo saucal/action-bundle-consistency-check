@@ -9,6 +9,7 @@ const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
+const { undeployed } = require('./lib/undeployed');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -65,46 +66,10 @@ async function vulnCheck(items) {
   return results;
 }
 
-/**
- * Commits on {ref} not deployed yet: the last build's source ("Build changes from <sha>" at the built
- * repo's HEAD) and what changed between it and the tip. null when the tip is what was built, or the
- * build's source can't be read (then the heal works on the tip alone, as before).
- */
 /** The source commit the built repo's last build names ('' when it names none). */
 async function lastBuild(treeRoot) {
   const m = /Build changes from ([0-9a-f]{40})/.exec((await sh('git', ['-C', path.resolve(treeRoot), 'log', '-1', '--format=%s'], { silent: true })).out);
   return m ? m[1] : '';
-}
-
-async function undeployed(treeRoot, cwd, tip, ref) {
-  const quiet = { cwd, silent: true };
-  const since = await lastBuild(treeRoot);
-  if (!since || since === tip) return null;
-  if ((await sh('git', ['cat-file', '-e', `${since}^{commit}`], quiet)).code !== 0) await sh('git', ['fetch', '-q', '--no-tags', 'origin', since], quiet);
-  // CI checkouts are shallow: deepen {ref} back to a day before the build's source, so the ancestry
-  // check and the diff see the commits in between (bounded, unlike --unshallow).
-  if ((await sh('git', ['rev-parse', '--is-shallow-repository'], quiet)).out.trim() === 'true') {
-    const when = Number((await sh('git', ['show', '-s', '--format=%ct', since], quiet)).out.trim());
-    if (when) await sh('git', ['fetch', '-q', '--no-tags', `--shallow-since=${when - 86400}`, 'origin', ref], quiet);
-  }
-  if ((await sh('git', ['merge-base', '--is-ancestor', since, tip], quiet)).code !== 0) {
-    core.warning(`The last build's source ${since.slice(0, 7)} is not in ${tip.slice(0, 7)}'s history; healing on the tip only.`);
-    return null;
-  }
-  const lockAt = async (rev) => {
-    try { return new Map((JSON.parse((await sh('git', ['show', `${rev}:composer.lock`], quiet)).out).packages || []).map((p) => [p.name, p.version])); } catch { return new Map(); }
-  };
-  const coreAt = async (rev) => {
-    try { return ((JSON.parse((await sh('git', ['show', `${rev}:composer.json`], quiet)).out).extra) || {})['wordpress-core'] || ''; } catch { return ''; }
-  };
-  const [a, b] = [await lockAt(since), await lockAt(tip)];
-  return {
-    since,
-    packages: new Set([...a.keys(), ...b.keys()].filter((n) => a.get(n) !== b.get(n))),
-    files: (await sh('git', ['diff', '--name-only', since, tip], quiet)).out.split('\n').filter(Boolean),
-    core: (await coreAt(since)) !== (await coreAt(tip)),
-    commits: Number((await sh('git', ['rev-list', '--count', `${since}..${tip}`], quiet)).out.trim()) || 0,
-  };
 }
 
 /** Stage ONLY reconcile's outputs (not `git add -A`: Prepare injects build files that aren't source). */
@@ -209,7 +174,7 @@ async function closeStale(repo, branch, why) {
   // The base this branch was cut from — the convergence gate merges only while origin/{ref} is still here.
   const baseSha = (await sh('git', ['rev-parse', `origin/${ref}`], { cwd })).out.trim();
   core.setOutput('base-sha', baseSha);
-  const pending = await undeployed(treeRoot, cwd, baseSha, ref);
+  const pending = await undeployed(await lastBuild(treeRoot), cwd, baseSha, ref, core.warning);
 
   // What the repo commits itself: those paths are healed by copying the server's version, never
   // looked up in a registry. A directory counts if it holds tracked files.
