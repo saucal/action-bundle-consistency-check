@@ -767,3 +767,42 @@ test('security: the same item inside `only` is scanned and flagged', async () =>
   assert.strictEqual(res.classified.find((x) => x.key === 'code-snippets').category, 'suspicious');
   assert.deepStrictEqual(res.autoMerge.eligible, []);
 });
+
+test('lock hash: composer.json back to its original text, but an intermediate solve rewrote the lock -> refresh it', async () => {
+  const sourceDir = tmpSource();
+  fs.writeFileSync(path.join(sourceDir, 'composer.lock'), JSON.stringify({ 'content-hash': 'orig', packages: [] }));
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  fs.mkdirSync(path.join(treeRoot, 'plugins', 'code-snippets'), { recursive: true });
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'code-snippets', 'code-snippets.php'), '<?php\n');
+  const calls = [];
+  // The exact server version is unavailable; the `<server` bridge solve succeeds on a dev branch
+  // (writing the lock against the intermediate composer.json), so the require is dropped again.
+  const runner = { calls, composer(args) {
+    calls.push({ args });
+    if (args[0] !== 'update' || args[1] === '--lock') return { code: 0, stdout: '', stderr: '' };
+    if (args.includes('--with')) return { code: 1, stdout: '', stderr: 'Root composer.json requires wpackagist-plugin/code-snippets 3.6.5, it could not be found' };
+    fs.writeFileSync(path.join(sourceDir, 'composer.lock'), JSON.stringify({ 'content-hash': 'intermediate', packages: [{ name: 'wpackagist-plugin/code-snippets', version: 'dev-trunk' }] }));
+    return { code: 0, stdout: '', stderr: '' };
+  } };
+  const before = fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8');
+  await reconcileRun({ sourceDir, treeRoot, manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+  assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), before, 'composer.json round-tripped');
+  const last = calls[calls.length - 1];
+  assert.deepStrictEqual(last.args.slice(0, 2), ['update', '--lock'], calls.map((c) => c.args.join(' ')).join(' | '));
+});
+
+test('a composer.json rewrite that changes nothing keeps the original text (no reflow, no relock)', async () => {
+  const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'src-'));
+  const original = '{\n  "name": "t/t",\n  "require": {},\n  "config": { "allow-plugins": { "x/y": true } }\n}\n';
+  fs.writeFileSync(path.join(sourceDir, 'composer.json'), original);
+  const calls = [];
+  // The add cannot install: the require is dropped again, leaving composer.json semantically untouched.
+  const runner = { calls, composer(args) {
+    calls.push({ args });
+    return args[0] === 'update' ? { code: 1, stdout: '', stderr: 'Root composer.json requires wpackagist-plugin/code-snippets 3.6.5, it could not be found' } : { code: 0, stdout: '', stderr: '' };
+  } };
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner });
+  assert.strictEqual(res.classified.find((c) => c.key === 'code-snippets').category, 'version-unavailable');
+  assert.strictEqual(fs.readFileSync(path.join(sourceDir, 'composer.json'), 'utf8'), original);
+  assert.ok(!calls.some((c) => c.args[0] === 'update' && c.args[1] === '--lock'), 'no lock refresh');
+});
