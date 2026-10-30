@@ -4,11 +4,12 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody, remaining } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('./lib/report');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
+const { undeployed } = require('./lib/undeployed');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -65,46 +66,10 @@ async function vulnCheck(items) {
   return results;
 }
 
-/**
- * Commits on {ref} not deployed yet: the last build's source ("Build changes from <sha>" at the built
- * repo's HEAD) and what changed between it and the tip. null when the tip is what was built, or the
- * build's source can't be read (then the heal works on the tip alone, as before).
- */
 /** The source commit the built repo's last build names ('' when it names none). */
 async function lastBuild(treeRoot) {
   const m = /Build changes from ([0-9a-f]{40})/.exec((await sh('git', ['-C', path.resolve(treeRoot), 'log', '-1', '--format=%s'], { silent: true })).out);
   return m ? m[1] : '';
-}
-
-async function undeployed(treeRoot, cwd, tip, ref) {
-  const quiet = { cwd, silent: true };
-  const since = await lastBuild(treeRoot);
-  if (!since || since === tip) return null;
-  if ((await sh('git', ['cat-file', '-e', `${since}^{commit}`], quiet)).code !== 0) await sh('git', ['fetch', '-q', '--no-tags', 'origin', since], quiet);
-  // CI checkouts are shallow: deepen {ref} back to a day before the build's source, so the ancestry
-  // check and the diff see the commits in between (bounded, unlike --unshallow).
-  if ((await sh('git', ['rev-parse', '--is-shallow-repository'], quiet)).out.trim() === 'true') {
-    const when = Number((await sh('git', ['show', '-s', '--format=%ct', since], quiet)).out.trim());
-    if (when) await sh('git', ['fetch', '-q', '--no-tags', `--shallow-since=${when - 86400}`, 'origin', ref], quiet);
-  }
-  if ((await sh('git', ['merge-base', '--is-ancestor', since, tip], quiet)).code !== 0) {
-    core.warning(`The last build's source ${since.slice(0, 7)} is not in ${tip.slice(0, 7)}'s history; healing on the tip only.`);
-    return null;
-  }
-  const lockAt = async (rev) => {
-    try { return new Map((JSON.parse((await sh('git', ['show', `${rev}:composer.lock`], quiet)).out).packages || []).map((p) => [p.name, p.version])); } catch { return new Map(); }
-  };
-  const coreAt = async (rev) => {
-    try { return ((JSON.parse((await sh('git', ['show', `${rev}:composer.json`], quiet)).out).extra) || {})['wordpress-core'] || ''; } catch { return ''; }
-  };
-  const [a, b] = [await lockAt(since), await lockAt(tip)];
-  return {
-    since,
-    packages: new Set([...a.keys(), ...b.keys()].filter((n) => a.get(n) !== b.get(n))),
-    files: (await sh('git', ['diff', '--name-only', since, tip], quiet)).out.split('\n').filter(Boolean),
-    core: (await coreAt(since)) !== (await coreAt(tip)),
-    commits: Number((await sh('git', ['rev-list', '--count', `${since}..${tip}`], quiet)).out.trim()) || 0,
-  };
 }
 
 /** Stage ONLY reconcile's outputs (not `git add -A`: Prepare injects build files that aren't source). */
@@ -138,7 +103,7 @@ async function updatePr(repo, ref, branch, body) {
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
   // and requires `read:org`, which CI tokens usually lack.
-  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`]);
+  const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`], { silent: true }); // the response is the whole PR as JSON
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
   core.setOutput('pr', num);
@@ -209,7 +174,7 @@ async function closeStale(repo, branch, why) {
   // The base this branch was cut from — the convergence gate merges only while origin/{ref} is still here.
   const baseSha = (await sh('git', ['rev-parse', `origin/${ref}`], { cwd })).out.trim();
   core.setOutput('base-sha', baseSha);
-  const pending = await undeployed(treeRoot, cwd, baseSha, ref);
+  const pending = await undeployed(await lastBuild(treeRoot), cwd, baseSha, ref, core.warning);
 
   // What the repo commits itself: those paths are healed by copying the server's version, never
   // looked up in a registry. A directory counts if it holds tracked files.
@@ -247,7 +212,11 @@ async function closeStale(repo, branch, why) {
       await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
       // -x within these paths only: adopted dirs are usually gitignored (plugins/).
       await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
+      const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
       result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
+      for (const c of result.classified.filter((x) => x.category === 'deferred')) {
+        c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+      }
     }
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo
@@ -255,7 +224,6 @@ async function closeStale(repo, branch, why) {
     // Every PR takes this shape, held ones too: merged by hand, a one-commit PR would record the tip
     // (undeployed commits included) as what the server runs.
     if (pending) {
-      core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
       tipResult = result;
       const tipStaged = await stageOutputs(cwd, result, isTracked);
       if (tipStaged.length) {
@@ -270,6 +238,7 @@ async function closeStale(repo, branch, why) {
         merged = { sha: findMergedHeal((await sh('git', ['log', '--no-merges', '--format=%H%x09%s', `${pending.since}..${baseSha}`], { cwd, silent: true })).out, ref) };
       }
       if (!merged) {
+        core.info(`${ref} has ${pending.commits} commit(s) not deployed yet (last build: ${pending.since.slice(0, 7)}): the heal is built on that commit and merged next to them.`);
         await must(['reset', '-q', '--hard'], cwd);
         await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
         await must(['checkout', '-q', '-B', `${branch}-build`, pending.since], cwd);
@@ -352,8 +321,7 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). ` +
-      `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, which then goes through.\n\n` + body;
+    body = undeployedNote(ref, pending, classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length) + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
@@ -389,7 +357,7 @@ async function closeStale(repo, branch, why) {
     ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
-      : `**Auto-merge:** held for a human — ${reasonLines ? `\n${reasonLines}` : "see “Repo changes this PR can't make”."}\n\n`) + body;
+      : heldNote(reasonLines)) + body;
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -431,7 +399,7 @@ async function closeStale(repo, branch, why) {
   const committed = await sh('git', ['commit', '-m', tipResult
     ? [`Reconcile server drift on ${ref} [commit only]`, '', `Parity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`,
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')
-    : [`Reconcile server drift on ${ref} [commit only]`, '', 'Brings the repo in line with the server; verified to reproduce it before merging.',
+    : [`Reconcile server drift on ${ref} [commit only]`, '', healCommitLine(autoMergeOn && autoMerge && autoMerge.ok),
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
   if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
   let headSha = (await sh('git', ['rev-parse', 'HEAD'], { cwd })).out.trim();
