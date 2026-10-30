@@ -10,6 +10,7 @@ const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
+const { stageOutputs } = require('./lib/stage');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -70,22 +71,6 @@ async function vulnCheck(items) {
 async function lastBuild(treeRoot) {
   const m = /Build changes from ([0-9a-f]{40})/.exec((await sh('git', ['-C', path.resolve(treeRoot), 'log', '-1', '--format=%s'], { silent: true })).out);
   return m ? m[1] : '';
-}
-
-/** Stage ONLY reconcile's outputs (not `git add -A`: Prepare injects build files that aren't source). */
-async function stageOutputs(cwd, result, isTracked) {
-  // Not .patches_applied: the local "patches already applied" marker. Committed, a fresh build
-  // sees a matching hash and never reinstalls the patched packages, so patches don't apply.
-  const OUTPUT_PATHS = ['composer.json', 'composer.lock', 'patches', 'patches.lock.json', '.gitignore'];
-  // Tracked-but-gone counts too: a withdrawn last patch deletes patches/ and patches.lock.json.
-  const toStage = OUTPUT_PATHS.filter((p) => fs.existsSync(path.join(cwd, p)) || isTracked(p));
-  if (toStage.length) await sh('git', ['add', '-A', '--', ...toStage], { cwd });
-  // Force-add adopted (vendored) component dirs — plugins/ is typically gitignored for
-  // composer-managed installs, so a plain `git add` would skip the newly-vendored source.
-  for (const root of (result.adoptedPaths || [])) await sh('git', ['add', '-f', '--', root], { cwd });
-  // Committed code taken from the server, deletions included.
-  if ((result.trackedPaths || []).length) await sh('git', ['add', '-A', '--', ...result.trackedPaths], { cwd });
-  return (await sh('git', ['diff', '--cached', '--name-only'], { cwd })).out.split('\n').filter(Boolean);
 }
 
 /**
@@ -222,7 +207,7 @@ async function closeStale(repo, branch, why) {
     // (undeployed commits included) as what the server runs.
     if (pending) {
       tipResult = result;
-      const tipStaged = await stageOutputs(cwd, result, isTracked);
+      const tipStaged = await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
       if (tipStaged.length) {
         // F's tree merges unattended without being built: at least prove its lock is valid.
         const valid = await runner.composer(['validate', '--no-check-all', '--no-check-publish', '--check-lock'], { cwd });
@@ -359,7 +344,7 @@ async function closeStale(repo, branch, why) {
   }
 
   // 3. Stage and commit only reconcile's outputs.
-  const staged = await stageOutputs(cwd, result, isTracked);
+  const staged = await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
   if (!staged.length) {
     // No PR, so no PR wording (a withdrawn suspicious heal keeps its PR, and its body, below).
     const suspicious = classified.some((c) => c.category === 'suspicious');

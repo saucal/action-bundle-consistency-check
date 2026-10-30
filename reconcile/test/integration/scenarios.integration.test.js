@@ -618,3 +618,44 @@ test('update + patch: newer version on server with edits -> lock moves, residual
   assert.match(read(path.join(dir, 'plugins/verplug/verplug.php')), /hotfix on production/, 'patch applied on install');
   assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
 });
+
+// --- adopted root under an ignored parent gains a new file on the server --------
+test('tracked root under a gitignored plugins/: a new server file git refuses is named as needing a decision, not reported as carried', async () => {
+  const { stageOutputs } = require('../../lib/stage');
+  const { execFileSync } = require('child_process');
+  const { dir } = makeProject({
+    plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }],
+  });
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { cwd: dir, encoding: 'utf8' });
+  // plugins/* ignored with no re-include for the custom plugin: an earlier adoption force-added it.
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n');
+  fs.mkdirSync(path.join(dir, 'plugins/customx'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plugins/customx/customx.php'), '<?php\n/* Plugin Name: customx */\n');
+  git('init', '-q');
+  git('add', '-A');
+  git('add', '-f', '--', 'plugins/customx');
+  git('commit', '-q', '-m', 'init');
+
+  const serverDir = stageServer(dir, (sv) => {
+    fs.mkdirSync(path.join(sv, 'plugins/customx/assets'), { recursive: true });
+    fs.writeFileSync(path.join(sv, 'plugins/customx/assets/blob.bin'), Buffer.from([0, 1, 2, 3]));
+  });
+  const files = new Set(git('ls-files').split('\n').filter(Boolean));
+  const isTracked = (p) => files.has(p) || [...files].some((f) => f.startsWith(`${p}/`));
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner(), isTracked });
+
+  const c = findByKey(res.classified, 'customx');
+  assert.strictEqual(c.category, 'tracked', `category: ${c && c.category}`);
+  const staged = await stageOutputs(dir, res, isTracked, async (args) => {
+    try { return { code: 0, out: git(...args) }; } catch (e) { return { code: e.status || 1, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+  });
+  assert.ok(!staged.includes('plugins/customx/assets/blob.bin'), `staged: ${staged}`);
+  assert.strictEqual(c.recoverable, false);
+  assert.match(c.remediation, /could not be staged.*ignored/);
+  const { remaining, reportBody } = require('../../lib/report');
+  assert.strictEqual(remaining(res.classified), '1 item(s) need a decision');
+  const body = reportBody(res.classified, { ref: 'main', runUrl: 'u', already: true });
+  assert.doesNotMatch(body, /next Deploy ships them/);
+  assert.match(body, /`customx` — .*could not be staged/);
+});
