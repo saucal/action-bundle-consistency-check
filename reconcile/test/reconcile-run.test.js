@@ -617,10 +617,37 @@ test('core: on a host-managed core, extra.wordpress-core is removed (the repo ca
 
 test('core: no line, writable core -> the line comes back at the server version (no update triggered)', async () => {
   const sourceDir = coreSource(null);
-  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: '', resolvers: noResolve, runner: fakeRunner(), coreVersionRemote: '7.1.3' });
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: '', resolvers: noResolve, runner: fakeRunner(), coreVersionRemote: '7.1.3',
+    vulnCheck: async (items) => items.map(() => ({ matches: [] })) });
   assert.strictEqual(readCore(sourceDir), '7.1.3');
   assert.ok(res.applied.includes('core:managed-again:7.1.3'), res.applied.join(','));
   assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
+});
+
+test('core: a move to a version with a known vulnerability is held, naming the version and the CVE', async () => {
+  const sourceDir = coreSource('7.1.4');
+  const asked = [];
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/hello-dolly/hello.php\n', resolvers, runner: fakeRunner(),
+    coreVersionRemote: '7.1.3',
+    vulnCheck: async (items) => { asked.push(...items); return items.map((it) => ({ matches: it.type === 'core' ? [{ id: 'wf-7', cve: 'CVE-2026-7' }] : [] })); } });
+  assert.strictEqual(readCore(sourceDir), '7.1.3', 'the PR still records the server version');
+  assert.ok(asked.some((it) => it.type === 'core' && it.slug === 'wordpress' && it.version === '7.1.3'), JSON.stringify(asked));
+  assert.strictEqual(res.autoMerge.ok, false);
+  assert.ok(res.autoMerge.reasons.includes('wordpress-core: known vulnerability at v7.1.3 — CVE-2026-7'), res.autoMerge.reasons.join(' | '));
+  assert.deepStrictEqual(res.autoMerge.eligible, [], 'no mixed heal: nothing merges while core waits');
+});
+
+test('core: a move to a version with no known vulnerability still auto-merges', async () => {
+  const sourceDir = coreSource('7.1.4');
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: '', resolvers: noResolve, runner: fakeRunner(),
+    coreVersionRemote: '7.1.3', vulnCheck: async (items) => items.map(() => ({ matches: [] })) });
+  assert.strictEqual(readCore(sourceDir), '7.1.3');
+  assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
+});
+
+test('core: vulnerability check unavailable -> held, as for plugins', async () => {
+  const res = await reconcileRun({ sourceDir: coreSource('7.1.4'), treeRoot: '/nonexistent', manifestText: '', resolvers: noResolve, runner: fakeRunner(), coreVersionRemote: '7.1.3' });
+  assert.ok(res.autoMerge.reasons.includes('wordpress-core: vulnerability check unavailable'), res.autoMerge.reasons.join(' | '));
 });
 
 test('core: no line, host-managed core -> left alone', async () => {

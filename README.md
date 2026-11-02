@@ -150,7 +150,8 @@ Everything taken from the server without registry provenance is scanned. A heal 
 (the rest still merges) when it adds a file, touches a must-use plugin, adds a script tag or an
 external URL, reads request data, changes JS/shell/package-manager files, matches a compromise
 pattern, adds a known-vulnerable or unchecked version, or adds a high-risk plugin (file managers,
-code snippets, DB admin…). Compromise signals mark the PR **🚨 Security review required**, ping Slack
+code snippets, DB admin…). A WordPress core version that is known-vulnerable or unchecked holds the
+whole heal (nothing merges without it). Compromise signals mark the PR **🚨 Security review required**, ping Slack
 and are never merged.
 
 ### Commits not deployed yet
