@@ -299,7 +299,7 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = undeployedNote(ref, pending, classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length) + body;
+    body = undeployedNote(ref, pending, classified) + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
