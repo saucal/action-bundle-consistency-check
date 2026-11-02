@@ -38,9 +38,9 @@ async function stageOutputs(cwd, result, isTracked, git) {
     c.remediation = /ignored by/.test(why) && refused.length
       ? `${c.key}: the server's copy could not be staged, so no commit carries it: .gitignore ignores ${refused.map((p) => `\`${p}\``).join(', ')}. **To match:** re-include it in .gitignore (a \`!\` rule), or add it to \`SSH_IGNORE_LIST_EXTRA\` if the server's copy should stay out of the repo.`
       : `${c.key}: the server's copy could not be staged, so no commit carries it. git: ${why}`;
-    // Decided before staging: an item no commit carries holds nothing and has no content to review.
+    // Decided before staging: an item no commit carries holds nothing. Its security notes stay (the files are still on the server), labelled.
     if (result.autoMerge) result.autoMerge.reasons = result.autoMerge.reasons.filter((r) => !r.startsWith(`${c.key}: `));
-    if (result.security) result.security.warn = result.security.warn.filter((h) => h.key !== c.key);
+    for (const h of (result.security && result.security.warn) || []) if (h.key === c.key) h.notInPr = true;
   }
   return (await git(['diff', '--cached', '--name-only'])).out.split('\n').filter(Boolean);
 }

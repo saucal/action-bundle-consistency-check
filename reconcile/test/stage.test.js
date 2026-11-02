@@ -43,7 +43,7 @@ test('stageOutputs: adopted roots are force-added, tracked files are not', async
   assert.ok(result.classified.every((c) => c.recoverable));
 });
 
-test('stageOutputs: an item git refuses drops its hold reasons and reviewer notes; others keep theirs', async () => {
+test('stageOutputs: an item git refuses drops its hold reasons but keeps its security notes, labelled not in this PR', async () => {
   const c = { key: 'customx', category: 'tracked', recoverable: true, paths: ['plugins/customx/blob.bin'] };
   const other = { key: 'othery', category: 'tracked', recoverable: true, paths: ['plugins/othery/a.php'] };
   const result = {
@@ -56,7 +56,7 @@ test('stageOutputs: an item git refuses drops its hold reasons and reviewer note
   await stageOutputs(os.tmpdir(), result, () => false, git);
 
   assert.deepStrictEqual(result.autoMerge.reasons, ['othery: script-file']);
-  assert.deepStrictEqual(result.security.warn.map((h) => h.key), ['othery']);
+  assert.deepStrictEqual(result.security.warn.map((h) => [h.key, h.rule, !!h.notInPr]), [['customx', 'binary', true], ['othery', 'script-file', false]]);
   assert.strictEqual(result.autoMerge.ok, false); // the verdict stays as decided
   const body = reportBody(result.classified, { ref: 'main', runUrl: 'u' });
   assert.match(body, /1 need a decision/);

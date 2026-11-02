@@ -195,12 +195,14 @@ async function closeStale(repo, branch, why) {
       const before = result.classified.filter((c) => c.recoverable);
       await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
       const refused = before.filter((c) => !c.recoverable);
+      const refusedNotes = result.security.warn.filter((h) => h.notInPr); // the rerun scans only what it heals
       await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
       // -x within these paths only: adopted dirs are usually gitignored (plugins/).
       await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
       result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
       result.classified = keepRefused(result.classified, refused);
+      result.security.warn.push(...refusedNotes);
       for (const c of result.classified.filter((x) => x.category === 'deferred')) {
         c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
       }
@@ -316,7 +318,7 @@ async function closeStale(repo, branch, why) {
   const warn = (security && security.warn) || [];
   core.setOutput('suspicious', crit.length ? 'true' : 'false');
   if (crit.length || warn.length) {
-    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${h.rule}`; // line 0: the whole file
+    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${h.rule}${h.notInPr ? ' (not in this PR, still on the server)' : ''}`; // line 0: the whole file
     const sec = [];
     if (crit.length) {
       sec.push('## 🚨 Security review required — not auto-merged', '',
