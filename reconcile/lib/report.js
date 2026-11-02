@@ -101,12 +101,15 @@ function remaining(classified) {
 const heldNote = (reasonLines) => `**Auto-merge:** held for a human${reasonLines ? `:\n\n${reasonLines}` : " — see “Repo changes this PR can't make”."}\n\n`;
 
 /**
- * Banner of a PR built on the last deployed commit. open: the repo changes it can't make — while
- * any remain, the check still fails, so the next Deploy does not go through either.
+ * Banner of a PR built on the last deployed commit. Only the repo changes that need a decision keep
+ * the check failing, so the next Deploy does not go through either; deferred/superseded ones don't.
  */
-const undeployedNote = (ref, pending, open) => `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). `
+const undeployedNote = (ref, pending, classified) => {
+  const open = classified.filter((c) => !c.recoverable && c.category !== 'ignorable' && !LATER.has(c.category)).length;
+  return `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). `
   + `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, `
-  + (open ? `which the consistency check still stops until the ${open} repo change(s) this PR can't make are dealt with.\n\n` : 'which then goes through.\n\n');
+  + (open ? `which the consistency check still stops until the ${open} repo change(s) that need a decision are made.\n\n` : 'which then goes through.\n\n');
+};
 
 /** The heal commit's explanation: only a PR the gate merges was verified before merging. */
 const healCommitLine = (gated) => (gated

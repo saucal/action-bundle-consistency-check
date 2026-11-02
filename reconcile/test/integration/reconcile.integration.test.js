@@ -128,3 +128,31 @@ test('stale: server == pristine yields bump-only with no patch written', async (
     assert.ok(Object.keys(patches).length === 0, 'patches.lock.json patches empty');
   }
 });
+
+// --- re-cut keeps key order -----------------------------------------------
+test('re-cut: refreshing the middle package keeps extra.patches and patches.lock.json order', async () => {
+  const { generatePatch } = require('../../lib/patch-gen');
+  const slugs = ['aplug', 'bplug', 'cplug'];
+  const pristine = (s) => `<?php\n/**\n * Plugin Name: ${s}\n * Version: 1.0.0\n */\n// app code\n`;
+  const patches = slugs.map((slug) => {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), 'ko-a-'));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), 'ko-b-'));
+    fs.writeFileSync(path.join(a, `${slug}.php`), pristine(slug));
+    fs.writeFileSync(path.join(b, `${slug}.php`), pristine(slug).replace('// app code', '// app code V1'));
+    return { pkg: `saucal/${slug}`, slug, root: `plugins/${slug}`, patchText: generatePatch(a, b, `plugins/${slug}`) };
+  });
+  const { dir, runner } = makeProject({
+    plugins: slugs.map((slug) => ({ slug, pkg: `saucal/${slug}`, version: '1.0.0', body: '// app code\n' })),
+    patches,
+  });
+  const order = slugs.map((s) => `saucal/${s}`);
+  const lockKeys = () => Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'patches.lock.json'), 'utf8')).patches);
+  assert.deepStrictEqual(lockKeys(), order, 'baseline lock order');
+
+  const serverDir = mkServerCopy(path.join(dir, 'plugins/bplug'), (name, c) => c.replace('// app code V1', '// app code V2'));
+  const res = await reconcilePatched({ projectDir: dir, slug: 'bplug', pkg: 'saucal/bplug', serverDir, runner });
+
+  assert.strictEqual(res.action, 'patched');
+  assert.deepStrictEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'composer.json'), 'utf8')).extra.patches), order);
+  assert.deepStrictEqual(lockKeys(), order);
+});

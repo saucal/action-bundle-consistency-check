@@ -307,7 +307,7 @@ async function closeStale(repo, branch, why) {
 
   let body = reportBody(classified, { ref, runUrl });
   if (tipResult) {
-    body = undeployedNote(ref, pending, classified.filter((c) => !c.recoverable && c.category !== 'ignorable').length) + body;
+    body = undeployedNote(ref, pending, classified) + body;
   }
 
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
@@ -316,7 +316,7 @@ async function closeStale(repo, branch, why) {
   const warn = (security && security.warn) || [];
   core.setOutput('suspicious', crit.length ? 'true' : 'false');
   if (crit.length || warn.length) {
-    const line = (h) => `- \`${h.file}:${h.line}\` — ${h.rule}`;
+    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${h.rule}`; // line 0: the whole file
     const sec = [];
     if (crit.length) {
       sec.push('## 🚨 Security review required — not auto-merged', '',

@@ -109,10 +109,17 @@ test('held line: reasons as a list after a colon, or a pointer to the body', () 
 
 test('undeployed banner promises the Deploy goes through only when nothing is left to decide', () => {
   const pending = { commits: 2, since: 'a'.repeat(40) };
-  assert.match(undeployedNote('main', pending, 0), /`main` has 2 commit\(s\) not deployed yet \(since `aaaaaaa`\).*until the next Deploy, which then goes through\.\n\n$/);
-  const open = undeployedNote('main', pending, 1);
+  assert.match(undeployedNote('main', pending, []), /`main` has 2 commit\(s\) not deployed yet \(since `aaaaaaa`\).*until the next Deploy, which then goes through\.\n\n$/);
+  const open = undeployedNote('main', pending, classified);
   assert.doesNotMatch(open, /goes through/);
-  assert.match(open, /which the consistency check still stops until the 1 repo change\(s\) this PR can't make are dealt with\./);
+  assert.match(open, /which the consistency check still stops until the 2 repo change\(s\) that need a decision are made\./);
+});
+
+test('undeployed banner: deferred and superseded drift does not stop the next Deploy', () => {
+  const pending = { commits: 2, since: 'a'.repeat(40) };
+  const later = [{ key: 'query-monitor', category: 'deferred', recoverable: false }, { key: 'akismet', category: 'superseded', recoverable: false }];
+  assert.match(undeployedNote('main', pending, later), /which then goes through\.\n\n$/);
+  assert.match(undeployedNote('main', pending, [...later, ...classified]), /until the 2 repo change\(s\) that need a decision are made\./);
 });
 
 test('heal commit says "verified" only when the gate merges it', () => {

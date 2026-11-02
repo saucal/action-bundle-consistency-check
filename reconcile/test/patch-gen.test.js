@@ -21,6 +21,25 @@ test('generatePatch emits a unified diff rooted at the plugin path', () => {
   assert.match(patch, /\+\/\/ disabled/);
 });
 
+test('generatePatch roots a single-file diff at the file\'s repo path', () => {
+  const dir = mkdir('file-');
+  const server = path.join(dir, 'blob.bin');
+  fs.writeFileSync(server, Buffer.from([0, 1, 2, 255]));
+  const patch = generatePatch('/dev/null', server, 'plugins/x/assets/blob.bin');
+  assert.match(patch, /^diff --git plugins\/x\/assets\/blob\.bin plugins\/x\/assets\/blob\.bin$/m);
+  assert.ok(!patch.includes(dir.replace(/^\//, '')), patch);
+  const { holds } = require('../lib/suspicious').assessDiff(patch);
+  assert.ok(holds.length && holds.every((h) => h.file === 'plugins/x/assets/blob.bin'), JSON.stringify(holds));
+});
+
+test('generatePatch keeps /dev/null for a single text file the server added', () => {
+  const server = path.join(mkdir('file-'), 'new.php');
+  fs.writeFileSync(server, '<?php\n');
+  const patch = generatePatch('/dev/null', server, 'plugins/x/new.php');
+  assert.match(patch, /^--- \/dev\/null$/m);
+  assert.match(patch, /^\+\+\+ plugins\/x\/new\.php$/m);
+});
+
 test('generatePatch returns empty string when dirs match', () => {
   const a = mkdir('a-'); const b = mkdir('b-');
   fs.writeFileSync(path.join(a, 'x.php'), 'same\n');
