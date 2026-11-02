@@ -10,7 +10,7 @@ const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
-const { stageOutputs } = require('./lib/stage');
+const { stageOutputs, keepRefused } = require('./lib/stage');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -191,11 +191,16 @@ async function closeStale(repo, branch, why) {
     // only what this run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
     if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
       core.info(`Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`);
+      // Ask git first: an item it refuses is in no commit, so no later run can open a PR for it either.
+      const before = result.classified.filter((c) => c.recoverable);
+      await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
+      const refused = before.filter((c) => !c.recoverable);
       await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
       // -x within these paths only: adopted dirs are usually gitignored (plugins/).
       await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
       result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
+      result.classified = keepRefused(result.classified, refused);
       for (const c of result.classified.filter((x) => x.category === 'deferred')) {
         c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
       }
@@ -270,6 +275,9 @@ async function closeStale(repo, branch, why) {
     return;
   }
 
+  // 3. Stage only reconcile's outputs, before the body and verdict are read: git may refuse an item.
+  const staged = await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
+
   // With undeployed commits the PR shows the tip's heal (run A); merging, verify and the built repo
   // follow the heal on the deployed commit (run B).
   const { classified, applied, verification } = tipResult || result;
@@ -343,8 +351,7 @@ async function closeStale(repo, branch, why) {
     return;
   }
 
-  // 3. Stage and commit only reconcile's outputs.
-  const staged = await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
+  // Commit only what was staged.
   if (!staged.length) {
     // No PR, so no PR wording (a withdrawn suspicious heal keeps its PR, and its body, below).
     const suspicious = classified.some((c) => c.category === 'suspicious');
