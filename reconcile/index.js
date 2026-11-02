@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('./lib/report');
+const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
@@ -74,13 +75,16 @@ async function lastBuild(treeRoot) {
 }
 
 /**
- * Rewrite the open reconciliation PR's title and description. Returns its number, '' when no PR
- * is open, or false when the update failed (the step is failed).
+ * Rewrite the open reconciliation PR's title and description, commenting when what it carries or
+ * its auto-merge verdict changed. Returns its number, '' when no PR is open, or false when the
+ * update failed (the step is failed).
  */
-async function updatePr(repo, ref, branch, body) {
-  const existing = await sh('gh', ['pr', 'list', '-R', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
-  const num = existing.out.trim();
-  if (!num) return '';
+async function updatePr(repo, ref, branch, body, runUrl) {
+  const existing = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0] // empty | {number, body}'], { silent: true });
+  let open = null;
+  try { open = existing.out.trim() ? JSON.parse(existing.out) : null; } catch { core.setFailed(`listing the open PR failed:\n${existing.out}`); return false; }
+  if (!open) return '';
+  const num = String(open.number);
   const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
@@ -88,6 +92,10 @@ async function updatePr(repo, ref, branch, body) {
   const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`], { silent: true }); // the response is the whole PR as JSON
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
+  const trace = changeComment(readState(open.body), readState(body), runUrl);
+  if (trace && (await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${num}/comments`, '-f', `body=${trace}`], { silent: true })).code !== 0) {
+    core.warning(`Could not comment on PR #${num} about what changed.`);
+  }
   core.setOutput('pr', num);
   return num;
 }
@@ -346,6 +354,9 @@ async function closeStale(repo, branch, why) {
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
       : heldNote(reasonLines)) + body;
+  // Read back by the next run that rewrites the PR (pr-trace).
+  body += stateMarker(prState(classified, { auto: autoMergeOn && !!(autoMerge && autoMerge.ok),
+    reasons: autoMergeOn ? (autoMerge && autoMerge.reasons) || [] : ['auto-merge is off for this repo'] }));
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -368,7 +379,7 @@ async function closeStale(repo, branch, why) {
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
     if (suspicious) {
-      await updatePr(repo, ref, branch, body); // the open PR says what was found now
+      await updatePr(repo, ref, branch, body, runUrl); // the open PR says what was found now
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
@@ -422,7 +433,7 @@ async function closeStale(repo, branch, why) {
   core.setOutput('build-sha', buildSha);
 
   // 4. Upsert the PR via gh (GH_TOKEN is in env); the description is rewritten every run.
-  const updated = await updatePr(repo, ref, branch, body);
+  const updated = await updatePr(repo, ref, branch, body, runUrl);
   if (updated === false) return;
   if (!updated) {
     const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
