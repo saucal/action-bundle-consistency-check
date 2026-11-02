@@ -45,9 +45,11 @@ function generatePatch(pristineDir, serverDir, pluginRelRoot) {
   };
 
   // Header lines: swap the two temp roots for the component root by prefix, not by splitting on
-  // whitespace, so names with spaces keep their full path.
-  const bases = [pristineDir, serverDir].flatMap((b) => [b.replace(/^\/+/, '/'), b.replace(/^\/+/, '')]);
-  const rerootLine = (line) => bases.reduce((l, b) => l.split(`${b}/`).join(`${pluginRelRoot}/`), line);
+  // whitespace, so names with spaces keep their full path. A single-file root matches exactly.
+  const bases = [pristineDir, serverDir].filter((b) => b !== '/dev/null')
+    .flatMap((b) => [b.replace(/^\/+/, '/'), b.replace(/^\/+/, '')]);
+  const esc = (b) => b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rerootLine = (line) => bases.reduce((l, b) => l.replace(new RegExp(`${esc(b)}(?=/|\\s|$)`, 'g'), pluginRelRoot), line);
   return raw.split('\n').map((line) => (/^(diff --git |--- |\+\+\+ )/.test(line) ? rerootLine(line) : line)).join('\n');
 }
 
