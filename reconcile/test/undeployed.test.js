@@ -100,3 +100,11 @@ test('a merge at the shallow fetch boundary is not counted as a work commit', as
   assert.strictEqual(execFileSync('git', ['rev-list', '--parents', '-n1', merge], { cwd: clone, encoding: 'utf8' }).trim(), merge);
   assert.strictEqual(p.commits, 1);
 });
+
+test('only a merge after the deployed commit, same tree: nothing pending', async () => {
+  const r = repo({ 'composer.json': withPatches({}), 'composer.lock': lock });
+  // An earlier heal: R (parity, the deployed commit) on the old tip, then F merges the old tip back in.
+  const parity = r.commit({ 'README.md': 'healed\n' }, 'Reconcile server drift');
+  const tip = r.git('commit-tree', `${parity}^{tree}`, '-p', parity, '-p', r.since, '-m', 'Apply after parity');
+  assert.strictEqual(await undeployed(parity, r.dir, tip, 'main'), null);
+});
