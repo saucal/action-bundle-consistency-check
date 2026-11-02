@@ -33,7 +33,11 @@ async function stageOutputs(cwd, result, isTracked, git) {
     if (added.code === 0) continue;
     await git(['reset', '-q', '--', ...paths]); // never commit half an item
     c.recoverable = false;
-    c.remediation = `${c.key}: the server's copy could not be staged, so no commit carries it. git: ${added.out.trim().split('\n')[0]}`;
+    // git names the refused paths after its header line, then adds "hint:" lines.
+    const [why = '', ...refused] = added.out.trim().split('\n').filter((l) => l && !l.startsWith('hint:'));
+    c.remediation = /ignored by/.test(why) && refused.length
+      ? `${c.key}: the server's copy could not be staged, so no commit carries it: .gitignore ignores ${refused.map((p) => `\`${p}\``).join(', ')}. **To match:** re-include it in .gitignore (a \`!\` rule), or add it to \`SSH_IGNORE_LIST_EXTRA\` if the server's copy should stay out of the repo.`
+      : `${c.key}: the server's copy could not be staged, so no commit carries it. git: ${why}`;
   }
   return (await git(['diff', '--cached', '--name-only'])).out.split('\n').filter(Boolean);
 }

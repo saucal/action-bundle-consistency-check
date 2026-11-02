@@ -652,7 +652,7 @@ test('tracked root under a gitignored plugins/: a new server file git refuses is
   });
   assert.ok(!staged.includes('plugins/customx/assets/blob.bin'), `staged: ${staged}`);
   assert.strictEqual(c.recoverable, false);
-  assert.match(c.remediation, /could not be staged.*ignored/);
+  assert.match(c.remediation, /could not be staged.*\.gitignore ignores `plugins\/customx[^`]*`\. \*\*To match:\*\*/);
   const { remaining, reportBody } = require('../../lib/report');
   assert.strictEqual(remaining(res.classified), '1 item(s) need a decision');
   const body = reportBody(res.classified, { ref: 'main', runUrl: 'u', already: true });

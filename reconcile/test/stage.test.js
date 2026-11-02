@@ -11,7 +11,7 @@ test('stageOutputs: an item git refuses to stage is counted and named, never rep
   const calls = [];
   const git = async (args) => {
     calls.push(args.join(' '));
-    if (args[0] === 'add') return { code: 1, out: 'The following paths are ignored by one of your .gitignore files:\nplugins/customx\n' };
+    if (args[0] === 'add') return { code: 1, out: 'The following paths are ignored by one of your .gitignore files:\nplugins/customx\nhint: Use -f if you really want to add them.\n' };
     return { code: 0, out: '' };
   };
   const staged = await stageOutputs(os.tmpdir(), result, () => false, git);
@@ -19,7 +19,8 @@ test('stageOutputs: an item git refuses to stage is counted and named, never rep
   assert.deepStrictEqual(staged, []);
   assert.ok(calls.includes('reset -q -- plugins/customx/assets/blob.bin'), calls.join('\n'));
   assert.strictEqual(c.recoverable, false);
-  assert.match(c.remediation, /^customx: .*could not be staged.*ignored/);
+  assert.match(c.remediation, /^customx: .*could not be staged.*\.gitignore ignores `plugins\/customx`\. \*\*To match:\*\* .*SSH_IGNORE_LIST_EXTRA/);
+  assert.doesNotMatch(c.remediation, /files:|hint:/);
   assert.strictEqual(remaining(result.classified), '1 item(s) need a decision');
   const body = reportBody(result.classified, { ref: 'main', runUrl: 'u', already: true });
   assert.doesNotMatch(body, /next Deploy ships them/);
