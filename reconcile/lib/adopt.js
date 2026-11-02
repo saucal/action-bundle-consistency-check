@@ -14,7 +14,8 @@ const path = require('path');
  * @param {string} o.treeRoot    server-state tree
  * @param {string} o.root        repo-relative component root (e.g. plugins/<slug>)
  * @param {(relPath:string)=>boolean} [o.isSensitive]  predicate on repo-relative paths to skip
- * @returns {{files:number, skipped:number, root:string}}
+ * @returns {{files:number, skipped:number, root:string, symlinks:string[], large:string[]}}  symlinks/large:
+ *   repo-relative paths copied as links / of 1 MB or more, so the report can name them
  */
 function adoptComponent(o) {
   const from = path.join(o.treeRoot, o.root);
@@ -24,6 +25,8 @@ function adoptComponent(o) {
 
   let files = 0;
   let skipped = 0;
+  const symlinks = [];
+  const large = [];
   const walk = (relDir) => {
     const srcDir = path.join(o.treeRoot, o.root, relDir);
     for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
@@ -33,13 +36,15 @@ function adoptComponent(o) {
       if (o.isSensitive && o.isSensitive(rel)) { skipped++; continue; }
       const d = path.join(o.sourceDir, rel);
       fs.mkdirSync(path.dirname(d), { recursive: true });
-      if (e.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(s), d);
-      else fs.copyFileSync(s, d);
+      if (e.isSymbolicLink()) { fs.symlinkSync(fs.readlinkSync(s), d); symlinks.push(rel); } else {
+        fs.copyFileSync(s, d);
+        if (fs.statSync(s).size >= 1024 * 1024) large.push(rel);
+      }
       files++;
     }
   };
   walk('');
-  return { files, skipped, root: o.root };
+  return { files, skipped, root: o.root, symlinks, large };
 }
 
 module.exports = { adoptComponent };

@@ -17,6 +17,7 @@ test('adoptComponent copies the whole server component dir into source', () => {
   const res = adoptComponent({ sourceDir: src, treeRoot: server, root: 'plugins/foo' });
   assert.strictEqual(res.files, 2);
   assert.strictEqual(res.skipped, 0);
+  assert.deepStrictEqual([res.symlinks, res.large], [[], []]);
   assert.ok(fs.existsSync(path.join(src, 'plugins/foo/foo.php')));
   assert.ok(fs.existsSync(path.join(src, 'plugins/foo/inc/lib.php')));
 });

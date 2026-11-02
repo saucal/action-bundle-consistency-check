@@ -28,6 +28,8 @@ async function reconcilePatched(o) {
   //    install/reinstall). Without this, an "already-patched refresh" would diff
   //    against the previously-patched state and the regenerated patch would not
   //    apply cleanly from pristine.
+  //    Remember the entry order first: the re-cut entry goes back where it was, not last.
+  const patchOrder = fs.existsSync(composerPath) ? Object.keys((JSON.parse(fs.readFileSync(composerPath, 'utf8')).extra || {}).patches || {}) : [];
   await dropPatches(o.projectDir, o.pkg, o.runner);
 
   // 1. Restore pristine published files (bump-first reinstall).
@@ -61,6 +63,10 @@ async function reconcilePatched(o) {
     url: patchFile,
     depth: 2,
   });
+  // patches-relock writes patches.lock.json in this same order.
+  const p = next.extra.patches;
+  const keys = [...patchOrder.filter((k) => k in p), ...Object.keys(p).filter((k) => !patchOrder.includes(k))];
+  next.extra.patches = Object.fromEntries(keys.map((k) => [k, p[k]]));
   fs.writeFileSync(composerPath, serializeComposer(next, composerText));
 
   // 4. Relock + apply.
