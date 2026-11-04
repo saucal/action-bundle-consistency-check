@@ -4,7 +4,7 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('./lib/report');
 const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
@@ -377,6 +377,7 @@ async function closeStale(repo, branch, why) {
   if (!staged.length) {
     // No PR, so no PR wording (a withdrawn suspicious heal keeps its PR, and its body, below).
     const suspicious = classified.some((c) => c.category === 'suspicious');
+    let recording = false;
     await core.summary.addRaw(suspicious ? body : reportBody(classified, { ref, runUrl, already: true })).write();
     if (outcome === 'ignorable-only') {
       core.warning('Drift is entirely ignorable. Recommend updating SSH_IGNORE_LIST; see job summary.');
@@ -384,7 +385,8 @@ async function closeStale(repo, branch, why) {
       // Source already carries every recoverable fix (e.g. a heal whose built push failed last
       // run): let the gate rebuild {ref} as-is — if that converges it only commits the built repo.
       // Not when the built repo already records {ref}'s tip: that rebuild would record nothing.
-      if ((await lastBuild(treeRoot)) !== baseSha) core.setOutput('head-sha', baseSha);
+      recording = (await lastBuild(treeRoot)) !== baseSha;
+      if (recording) core.setOutput('head-sha', baseSha);
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
     if (suspicious) {
@@ -392,7 +394,7 @@ async function closeStale(repo, branch, why) {
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
-    core.setFailed(`Consistency drift produced no committable source change (${outcome}).`);
+    core.setFailed(noCommitFailure(outcome, ref, recording && !crit.length)); // suspicious: the verify job is skipped
     return;
   }
 

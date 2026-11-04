@@ -116,4 +116,9 @@ const healCommitLine = (gated) => (gated
   ? 'Brings the repo in line with the server; verified to reproduce it before merging.'
   : 'Brings the repo in line with the server. Merged by hand, so not verified beforehand: the Deploy this merge triggers records it only if its dry run changes nothing.');
 
-module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, remaining };
+/** The failure when nothing was staged. Recovery path (head-sha set): the repo is done, only the built repo is behind. */
+const noCommitFailure = (outcome, ref, recording) => (recording
+  ? `Consistency drift: ${ref} already carries every repo change; the verify job records its build on the built repo.`
+  : `Consistency drift produced no committable source change (${outcome}).`);
+
+module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining };
