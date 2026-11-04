@@ -190,7 +190,6 @@ async function closeStale(repo, branch, why) {
     // (which then sees only that) opens a PR for it. Start again from the clean branch tip, undoing
     // only what this run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
     if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
-      core.info(`Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`);
       // Ask git first: an item it refuses is in no commit, so no later run can open a PR for it either.
       const before = result.classified.filter((c) => c.recoverable);
       await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
@@ -206,6 +205,9 @@ async function closeStale(repo, branch, why) {
       for (const c of result.classified.filter((x) => x.category === 'deferred')) {
         c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
       }
+      core.info(result.autoMerge.ok
+        ? `Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`
+        : `Mixed heal: the part meant to merge now still needs review (${result.autoMerge.reasons.join('; ') || 'nothing left to merge'}); nothing merges unattended.`);
     }
     // Undeployed commits: the same heal (plus the superseded items, at the server's version) on the
     // deployed commit. Its build is what the server runs now — verify checks it, and the built repo

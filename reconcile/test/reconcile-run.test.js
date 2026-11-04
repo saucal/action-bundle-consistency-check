@@ -352,6 +352,17 @@ test('security: a component with critical signals is NOT adopted and is reported
   assert.ok(res.security.critical.some((h) => h.rule === 'stealth' && h.file === 'plugins/premiumplug/premiumplug.php'), JSON.stringify(res.security));
 });
 
+test('split: the rerun defers an adoption outside `only` instead of vendoring it', async () => {
+  const sourceDir = tmpSource();
+  const res = await reconcileRun({ sourceDir, treeRoot: premiumTree(), manifestText: `${premiumManifest}deleting plugins/hello-dolly/hello.php\n`,
+    resolvers, runner: showMissing(), adopt: true, vulnCheck: async (i) => i.map(() => ({ matches: [] })), only: new Set(['hello-dolly']) });
+  assert.strictEqual(res.classified.find((x) => x.key === 'premiumplug').category, 'deferred');
+  assert.deepStrictEqual(res.adoptedPaths, []);
+  assert.ok(!fs.existsSync(path.join(sourceDir, 'plugins/premiumplug')), 'nothing vendored');
+  assert.strictEqual(res.autoMerge.ok, true, res.autoMerge.reasons.join(' | '));
+  assert.deepStrictEqual(res.autoMerge.eligible, ['hello-dolly']);
+});
+
 test('security: a clean adoption has no critical findings', async () => {
   const res = await reconcileRun({ sourceDir: tmpSource(), treeRoot: premiumTree(), manifestText: premiumManifest, resolvers: noResolve, runner: showMissing(), adopt: true });
   assert.deepStrictEqual(res.security.critical, []);
