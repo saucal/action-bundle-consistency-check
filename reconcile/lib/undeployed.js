@@ -10,9 +10,23 @@ const patchUrls = (entry) => (Array.isArray(entry) ? entry.map((e) => (e && type
   .filter((u) => typeof u === 'string').map((u) => u.replace(/^\.\//, ''));
 
 /**
+ * Work commits only: merge commits (a PR's merge button, an earlier heal's merge) bring no change of
+ * their own. A merge at the shallow fetch's boundary looks parentless, so its raw object decides.
+ */
+async function workCommits(git, since, tip) {
+  const lines = (await git('rev-list', '--no-merges', '--parents', `${since}..${tip}`)).out.split('\n').filter(Boolean);
+  let n = 0;
+  for (const l of lines) {
+    const [sha, ...parents] = l.split(' ');
+    if (parents.length || (await git('cat-file', '-p', sha)).out.split('\n\n')[0].split('\n').filter((x) => x.startsWith('parent ')).length <= 1) n++;
+  }
+  return n;
+}
+
+/**
  * Commits on {ref} not deployed yet: the last build's source ({since}) and what changed between it
- * and the tip. null when the tip is what was built, or the build's source can't be read (then the
- * heal works on the tip alone, as before).
+ * and the tip. null when the tip is what was built (or only merges, changing nothing, came after
+ * it), or the build's source can't be read (then the heal works on the tip alone, as before).
  * @param {string} since the source commit the built repo's last build names ('' when none)
  * @param {(msg:string)=>void} [warn]
  */
@@ -37,6 +51,8 @@ async function undeployed(since, cwd, tip, ref, warn = () => {}) {
   const [a, b] = [await lockAt(since), await lockAt(tip)];
   const [ja, jb] = [await jsonAt(since, 'composer.json'), await jsonAt(tip, 'composer.json')];
   const files = (await git('diff', '--name-only', since, tip)).out.split('\n').filter(Boolean);
+  const commits = await workCommits(git, since, tip);
+  if (!commits && !files.length) return null;
   // A package whose patch the undeployed commits changed (its entry, or a patch file it names) is
   // theirs too, like a version change: the server's edits to it are not fresh drift.
   const [pa, pb] = [(ja.extra || {}).patches || {}, (jb.extra || {}).patches || {}];
@@ -47,8 +63,7 @@ async function undeployed(since, cwd, tip, ref, warn = () => {}) {
     packages: new Set([...[...a.keys(), ...b.keys()].filter((n) => a.get(n) !== b.get(n)), ...patched]),
     files,
     core: ((ja.extra || {})['wordpress-core'] || '') !== ((jb.extra || {})['wordpress-core'] || ''),
-    // Work commits only: merge commits (a PR's merge button, an earlier heal's merge) bring no change of their own.
-    commits: Number((await git('rev-list', '--count', '--no-merges', `${since}..${tip}`)).out.trim()) || 0,
+    commits,
   };
 }
 

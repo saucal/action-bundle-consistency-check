@@ -112,7 +112,7 @@ async function reconcileRun(o) {
     composer.extra = { ...(composer.extra || {}), 'wordpress-core': remoteCore };
     fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
     applied.push(`core:managed-again:${remoteCore}`);
-    classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: true, verified: true,
+    classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: true, verified: true, coreVersion: remoteCore,
       remediation: `WordPress core is writable by the deploy user: composer manages it again, at the server's ${remoteCore}.` });
   } else if (repoCore && remoteCore && remoteCore !== repoCore && o.pending && o.pending.core && (!o.only || o.only.has('wordpress-core'))) {
     classified.push({ key: 'wordpress-core', category: 'superseded', recoverable: false,
@@ -122,7 +122,7 @@ async function reconcileRun(o) {
       composer.extra['wordpress-core'] = remoteCore;
       fs.writeFileSync(composerPath, serializeComposer(composer, originalComposerText));
       applied.push(`core:${repoCore}->${remoteCore}`);
-      classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: true, verified: true,
+      classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: true, verified: true, coreVersion: remoteCore,
         remediation: `${remoteCore} on the server → \`extra.wordpress-core\` ${repoCore} → ${remoteCore}.` });
     } else {
       classified.push({ key: 'wordpress-core', category: 'wp-core', recoverable: false,
@@ -441,6 +441,12 @@ async function reconcileRun(o) {
   if (o.adopt) {
     for (const c of classified) {
       if (c.category !== 'premium-flag') continue;
+      // A mixed heal's rerun: an adoption is never in its no-review part, so it waits like any other deferred item.
+      if (o.only && !o.only.has(c.key)) {
+        c.category = 'deferred';
+        c.remediation = `${c.key}: left for review — the next run opens a PR for it.`;
+        continue;
+      }
       const root = c.root || `plugins/${c.key}`;
 
       // Authoritative re-check: if composer (authenticated) can see any candidate package, this is
@@ -491,10 +497,12 @@ async function reconcileRun(o) {
   }
 
   // Pass 3b — known vulnerabilities (ServiceApp's Wordfence/CVE feed) for whatever lands at a version
-  // nobody picked upstream: additions, downgrades, adopted code. No answer is not a clean answer.
-  const toCheck = classified.filter((c) => c.recoverable && (c.newRequire || c.downgrade || String(c.category).startsWith('adopted')));
+  // nobody picked upstream: additions, downgrades, adopted code, and the core version the server
+  // moved to. No answer is not a clean answer.
+  const toCheck = classified.filter((c) => c.recoverable && (c.newRequire || c.downgrade || c.coreVersion || String(c.category).startsWith('adopted')));
   if (toCheck.length) {
     const items = toCheck.map((c) => {
+      if (c.coreVersion) return { type: 'core', slug: 'wordpress', version: c.coreVersion };
       const hdr = c.root && o.treeRoot ? (c.kind === 'theme' ? themeVersion : pluginVersion)(path.join(o.treeRoot, c.root)) : null;
       return { type: c.kind === 'theme' ? 'theme' : 'plugin', slug: c.key, version: String(c.version || (hdr && hdr.version) || '') };
     });
@@ -580,7 +588,7 @@ async function reconcileRun(o) {
     if (c.newRequire && c.root && buildsDir(c.root) && shipsScripts(path.join(o.sourceDir, c.root))) {
       hold(c, `${c.key}: new plugin ships package.json scripts the build would run (a workspace pattern covers ${c.root})`);
     }
-    if (c.newRequire || c.downgrade || String(c.category).startsWith('adopted')) {
+    if (c.newRequire || c.downgrade || c.coreVersion || String(c.category).startsWith('adopted')) {
       if (!c.vulns) hold(c, `${c.key}: vulnerability check unavailable`);
       else if (c.vulns.length) hold(c, `${c.key}: known vulnerabilit${c.vulns.length > 1 ? 'ies' : 'y'} at v${c.vulnVersion || '?'} — ${c.vulns.map((v) => v.cve || v.id).join(', ')}`);
     }
@@ -598,7 +606,10 @@ async function reconcileRun(o) {
     }
   }
   const critical = security.critical.length > 0;
-  const eligible = critical ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
+  // A held core change can't wait as pending: no Self-heal-pending path covers core, and the verify
+  // dry run's core hook fails while the repo and the server disagree. Nothing merges without it.
+  const coreHeld = itemReasons.has('wordpress-core');
+  const eligible = critical || coreHeld ? [] : classified.filter((c) => c.recoverable && !itemReasons.has(c.key)).map((c) => c.key);
   // Superseded on the tip: the deployed commit's heal failing on one leaves it pending, not held (the tip's version stands).
   const needsHuman = classified.filter((c) => !c.recoverable && !['ignorable', 'deferred', 'superseded'].includes(c.category)
     && !(o.supersededKeys && o.supersededKeys.has(c.key)) && !(o.only && !o.only.has(c.key))); // outside `only`: the caller already judged it

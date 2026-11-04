@@ -66,3 +66,45 @@ test('counts work commits only: a merge-button merge is not a commit of its own'
   const tip = r.git('rev-parse', 'HEAD');
   assert.strictEqual((await undeployed(r.since, r.dir, tip, 'main')).commits, 1);
 });
+
+test('a merge at the shallow fetch boundary is not counted as a work commit', async () => {
+  const r = repo({ 'composer.json': withPatches({}), 'composer.lock': lock });
+  const at = (days) => ({ ...process.env, GIT_COMMITTER_DATE: `${Math.floor(Date.now() / 1000 - days * 86400)} +0000`, GIT_AUTHOR_DATE: `${Math.floor(Date.now() / 1000 - days * 86400)} +0000` });
+  const git = (env, ...a) => execFileSync('git', a, { cwd: r.dir, encoding: 'utf8', env }).trim();
+  git(at(10), 'commit', '-q', '--amend', '--no-edit', '--reset-author');
+  const old = git(at(10), 'rev-parse', 'HEAD');
+  git(at(10), 'checkout', '-qb', 'feature');
+  fs.writeFileSync(path.join(r.dir, 'a.txt'), 'a\n');
+  git(at(10), 'add', '-A');
+  git(at(10), 'commit', '-qm', 'old work');
+  // The merge is inside the fetch window (a day before the deployed commit); both its parents are older.
+  git(at(10), 'checkout', '-q', '-B', 'main', old);
+  git(at(1.5), 'merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature');
+  const merge = git(at(1.5), 'rev-parse', 'HEAD');
+  git(at(1), 'checkout', '-q', 'feature');
+  fs.writeFileSync(path.join(r.dir, 'b.txt'), 'b\n');
+  git(at(1), 'add', '-A');
+  git(at(1), 'commit', '-qm', 'deployed');
+  const since = git(at(1), 'rev-parse', 'HEAD');
+  git(at(0), 'checkout', '-q', 'main');
+  git(at(0), 'merge', '-q', '--no-ff', '-m', 'Merge deployed', since);
+  fs.writeFileSync(path.join(r.dir, 'c.txt'), 'c\n');
+  git(at(0), 'add', '-A');
+  git(at(0), 'commit', '-qm', 'undeployed work');
+  const tip = git(at(0), 'rev-parse', 'HEAD');
+
+  const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'undeployed-clone-'));
+  execFileSync('git', ['clone', '-q', '--depth', '1', '-b', 'main', `file://${r.dir}`, clone]);
+  const p = await undeployed(since, clone, tip, 'main');
+  // The window really did graft the merge parentless: that is the case under test.
+  assert.strictEqual(execFileSync('git', ['rev-list', '--parents', '-n1', merge], { cwd: clone, encoding: 'utf8' }).trim(), merge);
+  assert.strictEqual(p.commits, 1);
+});
+
+test('only a merge after the deployed commit, same tree: nothing pending', async () => {
+  const r = repo({ 'composer.json': withPatches({}), 'composer.lock': lock });
+  // An earlier heal: R (parity, the deployed commit) on the old tip, then F merges the old tip back in.
+  const parity = r.commit({ 'README.md': 'healed\n' }, 'Reconcile server drift');
+  const tip = r.git('commit-tree', `${parity}^{tree}`, '-p', parity, '-p', r.since, '-m', 'Apply after parity');
+  assert.strictEqual(await undeployed(parity, r.dir, tip, 'main'), null);
+});
