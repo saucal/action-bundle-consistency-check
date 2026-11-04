@@ -441,6 +441,12 @@ async function reconcileRun(o) {
   if (o.adopt) {
     for (const c of classified) {
       if (c.category !== 'premium-flag') continue;
+      // A mixed heal's rerun: an adoption is never in its no-review part, so it waits like any other deferred item.
+      if (o.only && !o.only.has(c.key)) {
+        c.category = 'deferred';
+        c.remediation = `${c.key}: left for review — the next run opens a PR for it.`;
+        continue;
+      }
       const root = c.root || `plugins/${c.key}`;
 
       // Authoritative re-check: if composer (authenticated) can see any candidate package, this is
