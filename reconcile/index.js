@@ -374,7 +374,7 @@ async function closeStale(repo, branch, why) {
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
-    core.setFailed(noCommitFailure(outcome, ref, recording));
+    core.setFailed(noCommitFailure(outcome, ref, recording && !crit.length)); // suspicious: the verify job is skipped
     return;
   }
 
