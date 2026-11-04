@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { reconcileRun, firstComposerError } = require('../lib/reconcile-run');
+const { reportBody } = require('../lib/report');
 
 function tmpSource(require = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'src-'));
@@ -524,6 +525,22 @@ test('vulns: a downgrade into a known-vulnerable version is held; a clean one au
   const clean = await reconcileRun({ sourceDir: mk(), treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner: fakeRunner(),
     vulnCheck: async (items) => items.map(() => ({ matches: [] })) });
   assert.ok(clean.autoMerge.ok, clean.autoMerge.reasons.join(' | '));
+});
+
+test('vulns: a long list keeps only CVE ids inline and lists every match below the changes', async () => {
+  const sourceDir = tmpSource({ 'wpackagist-plugin/code-snippets': '>=3.0' });
+  fs.writeFileSync(path.join(sourceDir, 'composer.lock'), JSON.stringify({ packages: [{ name: 'wpackagist-plugin/code-snippets', version: '3.7.0' }] }));
+  const matches = [{ id: 'wf-1', cve: 'CVE-2026-1', title: 'XSS', fixed_in: '3.6.6' }, { id: 'wf-2', fixed_in: '3.6.6', url: 'https://example.test/wf-2' },
+    { id: 'wf-3', fixed_in: '3.6.6' }, { id: 'wf-4', fixed_in: '3.6.6' }, { id: 'wf-5', cve: 'CVE-2017-1' }];
+  const res = await reconcileRun({ sourceDir, treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner: fakeRunner(),
+    vulnCheck: async (items) => items.map(() => ({ matches })) });
+  const reason = res.autoMerge.reasons.find((r) => /known vulnerabilit/.test(r));
+  assert.strictEqual(reason, 'code-snippets: known vulnerabilities at v3.6.5 — CVE-2026-1, CVE-2017-1, +3 more without a CVE id, listed under “Known vulnerabilities” below (fixed in v3.6.6 for 4 of 5; no fix listed for CVE-2017-1)');
+  const body = reportBody(res.classified, { ref: 'main', runUrl: 'https://example.test/run' });
+  assert.match(body, /<details><summary>Known vulnerabilities: 5 in `wpackagist-plugin\/code-snippets` at v3\.6\.5<\/summary>/);
+  assert.ok(body.includes('- `CVE-2026-1` — XSS (fixed in v3.6.6)'), body);
+  assert.ok(body.includes('- [wf-2](https://example.test/wf-2) (fixed in v3.6.6)'), body);
+  assert.ok(body.includes('- `CVE-2017-1` (no fix listed)'), body);
 });
 
 test('lock hash: any composer.json change ends with `composer update --lock` (extra is part of the hash)', async () => {
