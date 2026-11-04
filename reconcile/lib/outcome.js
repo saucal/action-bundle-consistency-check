@@ -16,4 +16,15 @@ function decideOutcome(classified) {
   return 'noop';
 }
 
-module.exports = { decideOutcome };
+/**
+ * End a run that stages nothing. Recovery (the branch already matches the server, only the built
+ * repo's record is behind) warns and outputs recovery=true, so action.yml keeps the job green;
+ * anything else fails it.
+ */
+function endRun(core, message, recovery) {
+  if (!recovery) { core.setFailed(message); return; }
+  core.setOutput('recovery', 'true');
+  core.warning(message);
+}
+
+module.exports = { decideOutcome, endRun };

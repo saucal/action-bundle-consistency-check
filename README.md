@@ -166,6 +166,9 @@ When the branch is ahead of the last deployed commit, the heal is built on the d
 unchanged). The drift report lives in the PR body. Once the server matches the build again, or there
 is nothing left to commit, an open reconciliation PR is closed with a comment and its branch deleted.
 The check stays **red** whenever real drift exists, so alerting still fires.
+The one exception is recovery: the branch already carries every repo change and only the built repo's
+record is behind (e.g. a heal whose built push failed). The check then ends with a **warning** and the
+verify job records the build.
 
 ### Inputs and outputs
 
