@@ -580,7 +580,11 @@ async function reconcileRun(o) {
   const hold = (c, r) => { if (!itemReasons.has(c.key)) itemReasons.set(c.key, []); itemReasons.get(c.key).push(r); };
   for (const c of classified) {
     if (!c.recoverable) continue;
-    if (String(c.category).startsWith('adopted')) hold(c, `${c.key}: adopts server files`);
+    if (String(c.category).startsWith('adopted')) {
+      hold(c, `${c.key}: adopts server files`);
+      const sigs = [...new Set((c.security || []).map((h) => h.rule))];
+      if (sigs.length) hold(c, `${c.key}: potential attack signatures (${sigs.join(', ')}) — review`);
+    }
     const risky = c.newRequire && riskyPluginCategory(c.composerPackage);
     if (risky) hold(c, `${c.key}: new high-risk plugin (${risky}) — confirm the site should have it`);
     // The build runs the scripts of the packages the workspace lists, with all of Deploy's secrets:
@@ -670,7 +674,7 @@ async function withdrawPatch(o, c) {
 /** Scan a component's (or loose file's) server copy; file paths come back repo-relative. */
 function serverHits(c, treeRoot) {
   if (!treeRoot) return [];
-  return scanPath(path.join(treeRoot, c.root || c.key), treeRoot);
+  return scanPath(path.join(treeRoot, c.root || c.key), treeRoot, String(c.category).startsWith('adopted'));
 }
 
 /** Pull the most informative line out of composer's error output for a one-line reason. */

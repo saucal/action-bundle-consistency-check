@@ -28,7 +28,7 @@ const PHP_EXT = /\.(?:php\d?|phtml|inc|module|ico|txt)$/i; // .ico/.txt: common 
  * @param {string} [file] used to skip PHP-only rules on non-PHP files; omitted = treat as PHP
  * @returns {{rule:string, line:number, severity:'critical'|'warn'}[]} one hit per rule per line
  */
-function scanText(text, file) {
+function scanText(text, file, attack = false) {
   const php = !file || PHP_EXT.test(file);
   const hits = [];
   String(text).split('\n').forEach((l, i) => {
@@ -36,6 +36,11 @@ function scanText(text, file) {
     for (const [rule, re, severity, phpOnly] of RULES) {
       if (phpOnly && !php) continue;
       if (!seen.has(rule) && re.test(l)) { seen.add(rule); hits.push({ rule, line: i + 1, severity }); }
+    }
+    if (attack && php) {
+      for (const [rule, re] of DELTA_RULES) {
+        if (ATTACK_RULES.has(rule) && !seen.has(rule) && re.test(l)) { seen.add(rule); hits.push({ rule, line: i + 1, severity: 'warn' }); }
+      }
     }
   });
   // Hiding users AND hiding plugins in one file is the stealth pattern of a planted backdoor.
@@ -52,20 +57,20 @@ function addedLines(diff) {
 }
 
 /**
- * Scan a file or a directory tree.
+ * Scan a file or a directory tree. `attack` adds ATTACK_RULES (as warn) on PHP files.
  * @returns {{file:string, rule:string, line:number, severity:string}[]} file paths relative to `base`
  */
-function scanPath(target, base = target) {
+function scanPath(target, base = target, attack = false) {
   if (!fs.existsSync(target)) return [];
   const st = fs.lstatSync(target);
   if (st.isSymbolicLink()) return [];
   if (st.isDirectory()) {
-    return fs.readdirSync(target).flatMap((n) => scanPath(path.join(target, n), base));
+    return fs.readdirSync(target).flatMap((n) => scanPath(path.join(target, n), base, attack));
   }
   // shortcut: files over 2 MB are skipped (minified bundles); upgrade if attackers hide there.
   if (!SCANNED_EXT.test(target) || st.size > 2 * 1024 * 1024) return [];
   const rel = path.relative(base, target) || path.basename(target);
-  return scanText(fs.readFileSync(target, 'utf8'), target).map((h) => ({ file: rel, ...h }));
+  return scanText(fs.readFileSync(target, 'utf8'), target, attack).map((h) => ({ file: rel, ...h }));
 }
 
 /** Scan only what a unified-diff patch file adds, per file (the published side has provenance). */
@@ -95,6 +100,9 @@ const DELTA_RULES = [
   ['adds-script-tag', /<\s*(?:script|iframe)\b/i],
   ['external-url', /\bhttps?:\/\//i],
 ];
+// The DELTA_RULES an adopted root is also scanned with, raw per line (so a commented or never-called
+// eval/decode still shows): the obfuscation/execution signatures, not the ordinary-plugin noise.
+const ATTACK_RULES = new Set(['eval', 'decode', 'chr-chain', 'dynamic-call', 'raw-input']);
 // Must-use plugins run on every request without being activated: any change there waits for a human.
 const MU_PLUGINS_RE = /(?:^|\/)(?:client-)?mu-plugins\//;
 const BACKTICK_RE = /`[^`]+`/; // PHP shell exec; JS template literals are fine
