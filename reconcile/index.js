@@ -13,6 +13,7 @@ const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
+const { endRun } = require('./lib/outcome');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -291,6 +292,7 @@ async function closeStale(repo, branch, why) {
     }
     const open = remaining(result.classified);
     if (open) core.setFailed(`Drift remains: ${open}. See the job summary.`);
+    else if (sha) endRun(core, noCommitFailure('reconciled', ref, true), true);
     return;
   }
 
@@ -394,7 +396,8 @@ async function closeStale(repo, branch, why) {
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
-    core.setFailed(noCommitFailure(outcome, ref, recording && !crit.length)); // suspicious: the verify job is skipped
+    const recovery = recording && !crit.length && !suspicious; // suspicious: the verify job is skipped
+    endRun(core, noCommitFailure(outcome, ref, recovery), recovery);
     return;
   }
 

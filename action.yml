@@ -142,6 +142,8 @@ runs:
   steps:
     - name: Pre-build Consistency check
       id: pre-build-consistency-check
+      # The job's color is decided by "Fail on drift" below: red unless reconcile reports recovery.
+      continue-on-error: true
       uses: saucal/action-deploy-ssh@v4
       with:
         env-host: ${{ inputs.env-host }}
@@ -188,7 +190,7 @@ runs:
 
     # Fixed some other way (a deploy, a manual sync): an open reconciliation PR is stale.
     - name: Close a stale reconciliation PR
-      if: ${{ success() && inputs.reconcile == '1' }}
+      if: ${{ success() && steps.pre-build-consistency-check.outcome == 'success' && inputs.reconcile == '1' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -198,7 +200,7 @@ runs:
       run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
 
     - name: Setup PHP + Composer for reconcile
-      if: ${{ failure() && inputs.reconcile == '1' }}
+      if: ${{ !cancelled() && steps.pre-build-consistency-check.outcome == 'failure' && inputs.reconcile == '1' }}
       uses: shivammathur/setup-php@v2
       with:
         php-version: '8.3'  # preinstalled on ubuntu-latest (24.04): no install
@@ -207,7 +209,7 @@ runs:
 
     - name: Reconcile drift
       id: reconcile
-      if: ${{ failure() && inputs.reconcile == '1' }}
+      if: ${{ !cancelled() && steps.pre-build-consistency-check.outcome == 'failure' && inputs.reconcile == '1' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -228,6 +230,15 @@ runs:
       # action-bundle-prepare earlier in this same job), which writes source/auth.json. Every
       # composer call the reconcile makes runs in source/ and reads it — no auth setup here.
       run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
+
+    # Recovery (the branch already matches the server, only the built repo's record is behind; the
+    # verify job records it) is a warning. Every other drift keeps the job red, and the slack steps below.
+    - name: Fail on drift
+      if: ${{ success() && steps.pre-build-consistency-check.outcome == 'failure' && steps.reconcile.outputs.recovery != 'true' }}
+      shell: bash
+      run: |
+        echo "::error::The server does not match the deployed build: see the consistency check step above."
+        exit 1
 
     - name: Signal possible compromise to slack
       if: ${{ failure() && steps.reconcile.outputs.suspicious == 'true' }}
