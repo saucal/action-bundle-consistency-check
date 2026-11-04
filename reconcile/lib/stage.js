@@ -21,7 +21,9 @@ async function stageOutputs(cwd, result, isTracked, git) {
   if (toStage.length) await git(['add', '-A', '--', ...toStage]);
   // Force-add adopted (vendored) component dirs — plugins/ is typically gitignored for
   // composer-managed installs, so a plain `git add` would skip the newly-vendored source.
-  // Committed code taken from the server, deletions included (not forced: .gitignore still applies).
+  // Committed code taken from the server, deletions included. Forced too: a root adopted under an
+  // ignored parent stays ignored, so its new files would be refused (a file the root's .gitignore
+  // excludes on purpose is then committed as well, once the server changes it).
   const tracked = new Set(result.trackedPaths || []);
   const adopted = new Set(result.adoptedPaths || []);
   for (const c of result.classified || []) {
@@ -29,7 +31,7 @@ async function stageOutputs(cwd, result, isTracked, git) {
     const isAdopted = adopted.has(c.adoptedRoot);
     const paths = isAdopted ? [c.adoptedRoot] : (c.paths || []).filter((p) => tracked.has(p));
     if (!paths.length) continue;
-    const added = await git(isAdopted ? ['add', '-f', '--', ...paths] : ['add', '-A', '--', ...paths]);
+    const added = await git(isAdopted ? ['add', '-f', '--', ...paths] : ['add', '-A', '-f', '--', ...paths]);
     if (added.code === 0) continue;
     await git(['reset', '-q', '--', ...paths]); // never commit half an item
     c.recoverable = false;
