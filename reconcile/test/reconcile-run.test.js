@@ -515,8 +515,12 @@ test('vulns: a downgrade into a known-vulnerable version is held; a clean one au
     vulnCheck: async (items) => { asked.push(...items); return items.map(() => ({ matches: [{ id: 'wf-1', title: 'XSS', cve: 'CVE-2026-1', fixed_in: '3.6.6' }, { id: 'wf-2', cve: 'CVE-2026-2', fixed_in: '3.10.0' }, { id: 'wf-3' }] })); } });
   assert.deepStrictEqual(asked, [{ type: 'plugin', slug: 'code-snippets', version: '3.6.5' }]);
   assert.strictEqual(vulnerable.autoMerge.ok, false);
-  // Names the version that clears every match (numeric order: 3.10.0 > 3.6.6).
-  assert.ok(vulnerable.autoMerge.reasons.includes('code-snippets: known vulnerabilities at v3.6.5 — CVE-2026-1, CVE-2026-2, wf-3 (fixed in v3.10.0)'), vulnerable.autoMerge.reasons.join(' | '));
+  // Names the highest fix (numeric order: 3.10.0 > 3.6.6) without implying it clears wf-3, which lists none.
+  assert.ok(vulnerable.autoMerge.reasons.includes('code-snippets: known vulnerabilities at v3.6.5 — CVE-2026-1, CVE-2026-2, wf-3 (fixed in v3.10.0 for 2 of 3; no fix listed for wf-3)'), vulnerable.autoMerge.reasons.join(' | '));
+  const reasonFor = async (matches) => (await reconcileRun({ sourceDir: mk(), treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner: fakeRunner(),
+    vulnCheck: async (items) => items.map(() => ({ matches })) })).autoMerge.reasons.find((r) => /known vulnerabilit/.test(r));
+  assert.strictEqual(await reasonFor([{ id: 'wf-1', cve: 'CVE-2026-1', fixed_in: '3.6.6' }, { id: 'wf-2', fixed_in: '3.10.0' }]), 'code-snippets: known vulnerabilities at v3.6.5 — CVE-2026-1, wf-2 (fixed in v3.10.0)');
+  assert.strictEqual(await reasonFor([{ id: 'wf-3' }]), 'code-snippets: known vulnerability at v3.6.5 — wf-3');
   const clean = await reconcileRun({ sourceDir: mk(), treeRoot: '/nonexistent', manifestText: 'deleting plugins/code-snippets/code-snippets.php\n', resolvers, runner: fakeRunner(),
     vulnCheck: async (items) => items.map(() => ({ matches: [] })) });
   assert.ok(clean.autoMerge.ok, clean.autoMerge.reasons.join(' | '));
