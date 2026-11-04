@@ -87,6 +87,14 @@ function reportBody(classified, meta) {
     for (const c of ignorable) L.push(`- \`${c.key}\` — ${c.remediation}`);
     L.push('', '</details>', '');
   }
+  for (const c of classified.filter((x) => x.vulnsSummarized)) {
+    L.push(`<details><summary>Known vulnerabilities: ${c.vulns.length} in ${name(c)} at v${c.vulnVersion || '?'}</summary>`, '');
+    for (const v of c.vulns) {
+      const id = v.cve || v.id;
+      L.push(`- ${v.url ? `[${id}](${v.url})` : `\`${id}\``}${v.title ? ` — ${v.title}` : ''}${v.fixed_in ? ` (fixed in v${v.fixed_in})` : ' (no fix listed)'}`);
+    }
+    L.push('', '</details>', '');
+  }
   return L.join('\n');
 }
 
