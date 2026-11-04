@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { reportBody, heldNote, undeployedNote, healCommitLine, remaining } = require('../lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('../lib/report');
 
 const classified = [
   { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'Added wpackagist-plugin/code-snippets:>=3.6.5' },
@@ -126,4 +126,10 @@ test('heal commit says "verified" only when the gate merges it', () => {
   assert.match(healCommitLine(true), /verified to reproduce it before merging/);
   assert.doesNotMatch(healCommitLine(false), /verified to reproduce/);
   assert.match(healCommitLine(false), /Merged by hand, so not verified beforehand/);
+});
+
+test('nothing staged: the recovery path says the repo is done and the verify job records the build', () => {
+  assert.strictEqual(noCommitFailure('reconciled', 'main', true), 'Consistency drift: main already carries every repo change; the verify job records its build on the built repo.');
+  assert.strictEqual(noCommitFailure('reconciled', 'main', false), 'Consistency drift produced no committable source change (reconciled).');
+  assert.strictEqual(noCommitFailure('ignorable-only', 'main', false), 'Consistency drift produced no committable source change (ignorable-only).');
 });
