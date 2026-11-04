@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { decideOutcome, endRun, isRecovery } = require('../lib/outcome');
 
 const rec = { recoverable: true, category: 'wpackagist-plugin' };
@@ -81,4 +82,21 @@ test('index.js: the nothing-staged path decides recovery through isRecovery', ()
   assert.match(src, /const recovery = isRecovery\(recording && !crit\.length && !suspicious, classified\);/);
   assert.strictEqual(src.match(/endRun\(core, noCommitFailure\('reconciled', ref, true\), true\)/g).length, 1);
   assert.match(src, /if \(open\) core\.setFailed\(.*\);\n\s*else if \(sha\) endRun\(/);
+});
+
+// The final annotation names the PR the run opened or updated, so a red check says where the fix waits.
+test('action.yml: "Fail on drift" names the reconciliation PR when there is one', () => {
+  const yml = fs.readFileSync(path.join(__dirname, '..', '..', 'action.yml'), 'utf8');
+  const block = yml.split(/\n    - name: /).find((b) => b.startsWith('Fail on drift\n'));
+  assert.match(block, /\n        PR: \$\{\{ steps\.reconcile\.outputs\.pr \}\}\n/);
+  assert.match(block, /\n        AUTO_MERGE: \$\{\{ steps\.reconcile\.outputs\.auto-merge \}\}\n/);
+  const script = block.split('\n      run: |\n')[1].split('\n').map((l) => l.replace(/^ {8}/, '')).join('\n');
+  const run = (env) => {
+    try { execFileSync('bash', ['-c', script], { env: { PATH: process.env.PATH, PR_URL: 'https://github.test/o/r/pull/7', ...env }, encoding: 'utf8' }); } catch (e) { return e.stdout.trim(); }
+    assert.fail('exits non-zero');
+  };
+  const base = '::error::The server does not match the deployed build: see the consistency check step above';
+  assert.strictEqual(run({ PR: '' }), `${base}.`);
+  assert.strictEqual(run({ PR: '7', AUTO_MERGE: 'false' }), `${base}; the repo changes are held in PR #7 for review: https://github.test/o/r/pull/7`);
+  assert.strictEqual(run({ PR: '7', AUTO_MERGE: 'true' }), `${base}; the repo changes are in PR #7, merged once a build of it reproduces the server: https://github.test/o/r/pull/7`);
 });
