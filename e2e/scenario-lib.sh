@@ -31,15 +31,18 @@ expect_branch_gone()  { _assert "$(gh api "repos/$REPO/git/refs/heads/$1" >/dev/
 # The built repo's lock (what the server is recorded to run), and a real Deploy of main afterwards.
 expect_built_lock()   { local got; got="$(gh api "repos/$REPO-built/contents/composer.lock?ref=main-built" -q .content | base64 -d | python3 -c "import json,sys; print(next((p['version'] for p in json.load(sys.stdin)['packages'] if p['name']==sys.argv[1]), 'absent'))" "$1")"
                         _assert "$([ "$got" = "$2" ] && echo 1)" "built repo locks $1 at $2" "$got"; }
-# Parity first: main's tip is a merge whose 1st parent is what the built repo was built from (as of
+# The PR head a self-heal merge commit on <tip> brought in (its 2nd parent), else <tip> itself.
+heal_head()           { if git -C "$SRC" log -1 --format=%s "$1" | grep -qE '^Merge pull request #[0-9]+ from [^ ]+/reconciliation-'; then git -C "$SRC" rev-parse "$1^2"; else echo "$1"; fi; }
+# Parity first: the merged PR head F is a merge whose 1st parent is what the built repo was built from (as of
 # run 1's commit deploy, before any later Deploy moves it), and whose 2nd parent is the undeployed tip.
 expect_parity_first() { local tip p1 src; git -C "$SRC" fetch -q origin main; tip="$(git -C "$SRC" rev-parse origin/main)"
-                        p1="$(git -C "$SRC" rev-parse "$tip^1" 2>/dev/null)"
+                        p1="$(git -C "$SRC" rev-parse "$(heal_head "$tip")^1" 2>/dev/null)"
                         src="$(gh api "repos/$REPO-built/commits/main-built" -q .commit.message | sed -n 's/^Build changes from \([0-9a-f]\{40\}\).*/\1/p')"
-                        _assert "$([ -n "$p1" ] && [ "$p1" = "$src" ] && echo 1)" "main's 1st parent is the parity commit the built repo was built from" "1st parent ${p1:0:7}, built from ${src:0:7}"; }
+                        _assert "$([ -n "$p1" ] && [ "$p1" = "$src" ] && echo 1)" "the merged heal's 1st parent is the parity commit the built repo was built from" "1st parent ${p1:0:7}, built from ${src:0:7}"; }
 expect_markers()      { local tip; tip="$(git -C "$SRC" rev-parse origin/main)"
                         _assert "$(git -C "$SRC" log -1 --format=%s "$tip" | grep -qF '[skip deploy]' && echo 1)" "main's tip says [skip deploy] (never deployed)" "$(git -C "$SRC" log -1 --format=%s "$tip")"
-                        _assert "$(git -C "$SRC" log -1 --format=%s "$tip^1" | grep -qF '[commit only]' && echo 1)" "its parity parent says [commit only]" "$(git -C "$SRC" log -1 --format=%s "$tip^1")"; }
+                        local r; r="$(heal_head "$tip")^1"
+                        _assert "$(git -C "$SRC" log -1 --format=%s "$r" | grep -qF '[commit only]' && echo 1)" "the parity commit says [commit only]" "$(git -C "$SRC" log -1 --format=%s "$r")"; }
 expect_deploy_ships() { git -C "$SRC" pull -q --ff-only; run_act workflow_dispatch deployment.yml deploy-manual >/dev/null 2>&1; local ok=$?
                         _assert "$([ $ok = 0 ] && echo 1)" "a normal Deploy of main afterwards succeeds" "failed"; }
 expect_server_plugin(){ local got; got="$(server wp plugin get "$1" --field=version 2>/dev/null)"; got="${got:-absent}"; _assert "$([ "$got" = "$2" ] && echo 1)" "server runs $1 $2" "${got:-absent}"; }
@@ -108,7 +111,7 @@ cmd_scenario() {
     local floor; floor="$(gh pr list -R "$REPO" --state all --json number -q 'map(.number) | max // 0')"
     log "  run 1"; cmd_check >/dev/null 2>&1; RUN1_LOG="$(ls -t "$WORK"/logs/*-check.log | head -1)"
     read -r RUN1_PR RUN1_PR_STATE <<< "$(newest_pr_since "$floor")"
-    # A fast-forward merge (undeployed commits) is marked merged by GitHub a few seconds later.
+    # A merge commit written through the API is marked merged by GitHub a few seconds later.
     if [ "$RUN1_PR_STATE" = OPEN ] && grep -qxE 'behind|identical' <<< "$(gh api "repos/$REPO/compare/main...$(gh pr view "$RUN1_PR" -R "$REPO" --json headRefOid -q .headRefOid)" -q .status 2>/dev/null)"; then
       local i; for i in $(seq 12); do sleep 5; read -r RUN1_PR RUN1_PR_STATE <<< "$(newest_pr_since "$floor")"; [ "$RUN1_PR_STATE" = MERGED ] && break; done
     fi

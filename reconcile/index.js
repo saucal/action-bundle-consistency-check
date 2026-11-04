@@ -10,7 +10,7 @@ const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = r
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
-const { undeployed } = require('./lib/undeployed');
+const { undeployed, recorded } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
 const { endRun, isRecovery } = require('./lib/outcome');
@@ -386,8 +386,9 @@ async function closeStale(repo, branch, why) {
     } else {
       // Source already carries every recoverable fix (e.g. a heal whose built push failed last
       // run): let the gate rebuild {ref} as-is — if that converges it only commits the built repo.
-      // Not when the built repo already records {ref}'s tip: that rebuild would record nothing.
-      recording = (await lastBuild(treeRoot)) !== baseSha;
+      // Not when the built repo already records {ref}'s tip, or the tip only adds the heal's merge
+      // commit on top of the record: that rebuild would record nothing.
+      recording = !(await recorded(await lastBuild(treeRoot), cwd, baseSha));
       if (recording) core.setOutput('head-sha', baseSha);
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
@@ -403,8 +404,8 @@ async function closeStale(repo, branch, why) {
 
   // With undeployed commits this is R, the parity commit: [commit only] is what happens to it (built
   // after a zero-change dry run, never rsynced).
-  // The merge fast-forwards {ref} to this commit (or, with undeployed commits, to F on top of it), so
-  // its message is what the push-triggered Deploy reads: [commit only] = build it, require a
+  // The merge commits this commit (or, with undeployed commits, F on top of it) into {ref}, and the
+  // push-triggered Deploy finds it through the PR and reads its message: [commit only] = build it, require a
   // zero-change dry run, commit the build, never rsync; Self-heal-pending = paths left for review.
   // Merged by hand, the PR carries everything it applies: only what it leaves alone is pending.
   const pendingLines = ((autoMerge && pendingOnMerge(autoMergeOn, autoMerge)) || []).map((p) => `Self-heal-pending: ${p}`);
@@ -418,9 +419,9 @@ async function closeStale(repo, branch, why) {
   let buildSha = '';
   if (tipResult) {
     // Parity first, then the undeployed work: R (this commit) = the deployed commit + the server's
-    // drift; F = R with the undeployed commits applied after it (1st parent R, 2nd the tip), so {ref}
-    // fast-forwards to F and `git log --first-parent` reads F, R, deployed. F was never deployed, so
-    // it says [skip deploy]; the workflow builds R for the built repo itself, after the fast-forward.
+    // drift; F = R with the undeployed commits applied after it (1st parent R, 2nd the tip), and the
+    // workflow merges F into {ref} (its merge says [skip deploy] too). F was never deployed, so it says
+    // [skip deploy]; the workflow builds R for the built repo itself, after the merge.
     buildSha = headSha;
     const merge = await sh('git', ['commit-tree', tipTree, '-p', buildSha, '-p', baseSha, '-m',
       [`Apply the ${pending.commits} commit(s) not deployed yet after parity [skip deploy]`, '',
