@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { decideOutcome, endRun } = require('../lib/outcome');
+const { decideOutcome, endRun, isRecovery } = require('../lib/outcome');
 
 const rec = { recoverable: true, category: 'wpackagist-plugin' };
 const unrec = { recoverable: false, category: 'compiled-asset' };
@@ -61,4 +61,24 @@ test('action.yml: a failed check stays red unless reconcile reports recovery', (
   // Before the final failure, failure() no longer means "the check failed".
   for (const s of steps.slice(0, fail)) assert.doesNotMatch(s.if, /failure\(\)/, s.name);
   for (const s of steps.slice(fail + 1)) assert.match(s.if, /failure\(\)/, s.name);
+});
+
+// A lagging built record is only recovery when nothing is left to decide: an item that still needs
+// one (partial / unrecoverable-only) keeps the job red, the Slack alert and the failed webhook.
+test('isRecovery: lagging record + an item needing a decision is not recovery', () => {
+  assert.strictEqual(isRecovery(true, [rec, unrec]), false);
+  assert.strictEqual(isRecovery(true, [unrec]), false);
+  assert.strictEqual(isRecovery(true, [rec, { recoverable: false, category: 'deferred' }]), false);
+});
+
+test('isRecovery: lagging record with nothing left (ignorable aside) is recovery; no lag is not', () => {
+  assert.strictEqual(isRecovery(true, [rec, ign]), true);
+  assert.strictEqual(isRecovery(false, [rec]), false);
+});
+
+test('index.js: the nothing-staged path decides recovery through isRecovery', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.match(src, /const recovery = isRecovery\(recording && !crit\.length && !suspicious, classified\);/);
+  assert.strictEqual(src.match(/endRun\(core, noCommitFailure\('reconciled', ref, true\), true\)/g).length, 1);
+  assert.match(src, /if \(open\) core\.setFailed\(.*\);\n\s*else if \(sha\) endRun\(/);
 });

@@ -13,7 +13,7 @@ const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
-const { endRun } = require('./lib/outcome');
+const { endRun, isRecovery } = require('./lib/outcome');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -396,7 +396,7 @@ async function closeStale(repo, branch, why) {
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
-    const recovery = recording && !crit.length && !suspicious; // suspicious: the verify job is skipped
+    const recovery = isRecovery(recording && !crit.length && !suspicious, classified); // suspicious: the verify job is skipped
     endRun(core, noCommitFailure(outcome, ref, recovery), recovery);
     return;
   }

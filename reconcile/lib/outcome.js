@@ -1,4 +1,5 @@
 'use strict';
+const { remaining } = require('./report');
 
 /**
  * @param {import('./classify').Classified[]} classified
@@ -27,4 +28,7 @@ function endRun(core, message, recovery) {
   core.warning(message);
 }
 
-module.exports = { decideOutcome, endRun };
+/** Recovery needs the built record to lag AND nothing left to decide or wait for: a lagging record alone is not one. */
+const isRecovery = (recording, classified) => !!recording && !remaining(classified);
+
+module.exports = { decideOutcome, endRun, isRecovery };
