@@ -357,7 +357,13 @@ async function reconcileRun(o) {
     if (res.action === 'bump-only') {
       // The published release reproduces the server: a plain version move, not a patch.
       c.category = String(c.composerPackage).startsWith('wpackagist-') ? `wpackagist-${c.kind || 'plugin'}` : 'satispress';
-      c.remediation = `v${c.version || '?'} on the server → lock moved to v${c.version || '?'} (the server's files match that release exactly).`;
+      const v = c.version || '?';
+      const before = lockedBefore[c.composerPackage];
+      const lock = before && before !== v ? ` (lock moved from v${before})` : '';
+      c.remediation = res.dropped && res.dropped.length
+        ? `v${v} on the server is the stock release again → its patch ${res.dropped.map((u) => `\`${u.replace(/^\.\//, '')}\``).join(', ')} is removed and the package goes back to the stock v${v}${lock}.`
+        : before === v ? `v${v} on the server → stays locked at v${v} (the server's files match that release exactly).`
+          : `v${v} on the server → lock moved to v${v} (the server's files match that release exactly).`;
       continue;
     }
     if (res.action === 'bridged') {

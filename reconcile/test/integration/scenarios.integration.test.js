@@ -315,6 +315,32 @@ test('already-patched refresh: further server edit -> patch rewritten', async ()
   assert.ok(res.applied.includes('patched:patchplug:patched'), `applied: ${res.applied}`);
 });
 
+test('patch dropped: server back to the stock release at the same version -> patch removed, no lock move claimed', async () => {
+  const pristineContent = '<?php\n/**\n * Plugin Name: patchplug\n * Version: 1.0.0\n */\n// app code\n';
+  const tmpPristine = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-pristine-'));
+  const tmpV1 = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-v1-'));
+  fs.writeFileSync(path.join(tmpPristine, 'patchplug.php'), pristineContent);
+  fs.writeFileSync(path.join(tmpV1, 'patchplug.php'), pristineContent.replace('// app code', '// app code PATCHED-V1'));
+  const patchText = generatePatch(tmpPristine, tmpV1, 'plugins/patchplug');
+  const { dir } = makeProject({
+    plugins: [{ slug: 'patchplug', pkg: 'saucal/patchplug', version: '1.0.0', body: '// app code\n' }],
+    patches: [{ pkg: 'saucal/patchplug', slug: 'patchplug', root: 'plugins/patchplug', patchText }],
+  });
+  // Server undid the edit: its copy is the stock 1.0.0 again.
+  const serverDir = stageServer(dir, (sv) => {
+    const f = path.join(sv, 'plugins/patchplug/patchplug.php');
+    fs.writeFileSync(f, read(f).replace('// app code PATCHED-V1', '// app code'));
+  });
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+  assert.ok(res.applied.includes('patched:patchplug:bump-only'), `applied: ${res.applied}`);
+  assert.ok(!fs.existsSync(path.join(dir, 'patches/patchplug.patch')), 'patch file removed');
+  const pc = findByKey(res.classified, 'patchplug');
+  assert.match(pc.remediation, /v1\.0\.0 on the server is the stock release again → its patch `patches\/patchplug\.patch` is removed and the package goes back to the stock v1\.0\.0\./);
+  assert.doesNotMatch(pc.remediation, /lock moved/);
+});
+
 // --- 7. flag-only sensitive ---------------------------------------------
 test('flag-only sensitive: server adds a credentials file -> flagged, no change', async () => {
   const { dir } = makeProject({

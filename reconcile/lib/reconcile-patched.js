@@ -16,7 +16,7 @@ const { pluginVersion, themeVersion } = require('./extract-version');
  * @param {() => Promise<boolean>} [o.ensurePatchSupport] called only once a real residual exists, before the patch is written
  * @param {boolean} [o.allowVersionGap] the server runs a version no registry offers: patch it on top of
  *   the installed (newest published) one, a bridge, instead of stopping at the version mismatch
- * @returns {Promise<{action:'patched'|'bridged'|'bump-only'|'version-mismatch'|'patch-unsupported', patchFile?:string, installed?:string, server?:string}>}
+ * @returns {Promise<{action:'patched'|'bridged'|'bump-only'|'version-mismatch'|'patch-unsupported', patchFile?:string, dropped?:string[], installed?:string, server?:string}>}
  */
 async function reconcilePatched(o) {
   const pluginRoot = o.pluginRoot || `plugins/${o.slug}`;
@@ -30,14 +30,14 @@ async function reconcilePatched(o) {
   //    apply cleanly from pristine.
   //    Remember the entry order first: the re-cut entry goes back where it was, not last.
   const patchOrder = fs.existsSync(composerPath) ? Object.keys((JSON.parse(fs.readFileSync(composerPath, 'utf8')).extra || {}).patches || {}) : [];
-  await dropPatches(o.projectDir, o.pkg, o.runner);
+  const dropped = (await dropPatches(o.projectDir, o.pkg, o.runner)).map((e) => (typeof e === 'string' ? e : e && e.url)).filter(Boolean);
 
   // 1. Restore pristine published files (bump-first reinstall).
   await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
 
   // 2. Residual diff: pristine(installed) -> server.
   const patch = generatePatch(installedDir, o.serverDir, pluginRoot);
-  if (!patch.trim()) return { action: 'bump-only' };
+  if (!patch.trim()) return { action: 'bump-only', dropped };
 
   // A patch only describes edits ON TOP OF one version: the pristine and server headers must agree.
   const header = pluginRoot.startsWith('themes/') ? themeVersion : pluginVersion;
