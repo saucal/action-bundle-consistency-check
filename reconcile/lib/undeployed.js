@@ -67,4 +67,18 @@ async function undeployed(since, cwd, tip, ref, warn = () => {}) {
   };
 }
 
-module.exports = { undeployed };
+/**
+ * Does the built repo's record already describe {tip}: the same commit, or only merges after it that
+ * change no file (the self-heal's own merge commit)? Rebuilding {tip} then would record nothing new.
+ * Call after undeployed(), which fetches {since} and deepens a shallow checkout.
+ */
+async function recorded(since, cwd, tip) {
+  if (!since) return false;
+  if (since === tip) return true;
+  const git = (...args) => sh(args, cwd);
+  return (await git('merge-base', '--is-ancestor', since, tip)).code === 0
+    && (await git('diff', '--quiet', since, tip)).code === 0
+    && !(await workCommits(git, since, tip));
+}
+
+module.exports = { undeployed, recorded };

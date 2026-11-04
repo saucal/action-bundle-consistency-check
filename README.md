@@ -125,7 +125,7 @@ and opens a `reconciliation-{ref}` PR. Nothing is deployed to heal.
 It is driven by the reusable workflow `saucal/action-maintenance/.github/workflows/consistency-check.yml`,
 which passes the `reconcile` input from the `SAUCAL_CONSISTENCY_RECONCILE` variable and, for heals that
 need no review, verifies the PR head reproduces the server exactly (a zero-change dry run of its build)
-and fast-forwards the branch to it with `[commit only]`: the build is committed to the built repo, the
+and merges it with a merge commit, `[commit only]`: the build is committed to the built repo, the
 server is not touched. The variables are documented in action-maintenance `docs/variables.md`.
 
 ### What it does

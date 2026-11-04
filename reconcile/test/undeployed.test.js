@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { undeployed } = require('../lib/undeployed');
+const { undeployed, recorded } = require('../lib/undeployed');
 
 /** A repo whose first commit is the deployed one; returns { dir, since, commit(files, msg) }. */
 function repo(files) {
@@ -107,4 +107,18 @@ test('only a merge after the deployed commit, same tree: nothing pending', async
   const parity = r.commit({ 'README.md': 'healed\n' }, 'Reconcile server drift');
   const tip = r.git('commit-tree', `${parity}^{tree}`, '-p', parity, '-p', r.since, '-m', 'Apply after parity');
   assert.strictEqual(await undeployed(parity, r.dir, tip, 'main'), null);
+});
+
+test('recorded: the record, or the heal merge commit on top of it, is already recorded', async () => {
+  const r = repo({ 'composer.json': withPatches({}), 'composer.lock': lock });
+  const parity = r.commit({ 'README.md': 'healed\n' }, 'Reconcile server drift');
+  // The self-heal merge: old tip (r.since) and the PR head (parity) as parents, the head's tree.
+  const merge = r.git('commit-tree', `${parity}^{tree}`, '-p', r.since, '-p', parity, '-m', 'Merge pull request #1');
+  assert.strictEqual(await recorded(parity, r.dir, parity), true);
+  assert.strictEqual(await recorded(parity, r.dir, merge), true);
+  assert.strictEqual(await recorded('', r.dir, merge), false, 'no record: never recorded');
+  assert.strictEqual(await recorded(r.since, r.dir, merge), false, 'the heal itself is not recorded yet');
+  r.git('checkout', '-q', merge);
+  const work = r.commit({ 'README.md': 'later\n' }, 'undeployed work');
+  assert.strictEqual(await recorded(parity, r.dir, work), false);
 });
