@@ -236,8 +236,15 @@ runs:
     - name: Fail on drift
       if: ${{ success() && steps.pre-build-consistency-check.outcome == 'failure' && steps.reconcile.outputs.recovery != 'true' }}
       shell: bash
+      env:
+        PR: ${{ steps.reconcile.outputs.pr }}
+        AUTO_MERGE: ${{ steps.reconcile.outputs.auto-merge }}
+        PR_URL: "${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.reconcile.outputs.pr }}"
       run: |
-        echo "::error::The server does not match the deployed build: see the consistency check step above."
+        msg="The server does not match the deployed build: see the consistency check step above."
+        if [ -n "$PR" ] && [ "$AUTO_MERGE" = "true" ]; then msg="${msg%.}; the repo changes are in PR #$PR, merged once a build of it reproduces the server: $PR_URL"
+        elif [ -n "$PR" ]; then msg="${msg%.}; the repo changes are held in PR #$PR for review: $PR_URL"; fi
+        echo "::error::$msg"
         exit 1
 
     - name: Signal possible compromise to slack
