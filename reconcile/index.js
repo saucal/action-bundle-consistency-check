@@ -12,6 +12,7 @@ const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
+const { splitHeal } = require('./lib/split-heal');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -194,24 +195,30 @@ async function closeStale(repo, branch, why) {
     const runOnce = (only, p = pending) => reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck, only, pending: p || undefined });
     const supersededKeys = (r) => r.classified.filter((c) => c.category === 'superseded').map((c) => c.key);
     result = await runOnce();
-    // Mixed heal: merge the part that needs no review now; the rest is deferred, and the next run
-    // (which then sees only that) opens a PR for it. Start again from the clean branch tip, undoing
-    // only what this run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
+    // Mixed heal (see splitHeal): merge the part that needs no review now, defer the rest — or, when the
+    // tip already carries that part, heal everything in one held PR. Start again from the clean branch
+    // tip, undoing only what a run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
     if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
       // Ask git first: an item it refuses is in no commit, so no later run can open a PR for it either.
       const before = result.classified.filter((c) => c.recoverable);
       await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
       const refused = before.filter((c) => !c.recoverable);
       const refusedNotes = result.security.warn.filter((h) => h.notInPr); // the rerun scans only what it heals
-      await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
-      // -x within these paths only: adopted dirs are usually gitignored (plugins/).
-      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
-      result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
-      result.classified = keepRefused(result.classified, refused);
-      result.security.warn.push(...refusedNotes);
-      for (const c of result.classified.filter((x) => x.category === 'deferred')) {
-        c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+      const split = await splitHeal(result, { runOnce, log: core.info,
+        stage: (r) => stageOutputs(cwd, r, isTracked, (args) => sh('git', args, { cwd })),
+        undo: async (r) => {
+          await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
+          // -x within these paths only: adopted dirs are usually gitignored (plugins/).
+          await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(r.trackedPaths || []), ...(r.adoptedPaths || [])], cwd);
+        } });
+      result = split.result;
+      if (!split.all) { // the full heal defers nothing and stages (and refuses) for itself
+        result.classified = keepRefused(result.classified, refused);
+        result.security.warn.push(...refusedNotes);
+        for (const c of result.classified.filter((x) => x.category === 'deferred')) {
+          c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+        }
       }
       core.info(result.autoMerge.ok
         ? `Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`
