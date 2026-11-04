@@ -192,6 +192,14 @@ test('tracked: a loose file in a tracked directory (client-mu-plugins, acf-json)
   assert.strictEqual(findKey(out, 'acf-json/group_1.json').category, 'tracked', 'new file in a tracked dir');
 });
 
+test('tracked: one new file inside a committed component names the file, not only the root', async () => {
+  const out = await classify([{ path: 'plugins/acme/assets/blob.bin', side: 'remote-only' }],
+    { resolvers, treeRoot: '/nonexistent', isTracked: tracked(['plugins/acme/acme.php']) });
+  const c = findKey(out, 'acme');
+  assert.strictEqual(c.category, 'tracked');
+  assert.strictEqual(c.remediation, '`plugins/acme/assets/blob.bin` added on the server → added to the repo.');
+});
+
 test('tracked: the text says what happened on the server (deleted / changed / added)', async () => {
   const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
   fs.writeFileSync(path.join(treeRoot, 'changed.txt'), 'server');

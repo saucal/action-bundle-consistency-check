@@ -80,8 +80,10 @@ function trackedVerdict(key, comp, items, onServer) {
   const how = (it) => (it.side === 'remote-only' ? 'added' : onServer(it.path) ? 'changed' : 'deleted');
   const n = { added: 0, changed: 0, deleted: 0 };
   for (const it of items) n[how(it)]++;
+  // A file inside a committed component is keyed by its root: name the file, not just the root.
+  const named = comp && items.length === 1 ? `\`${items[0].path}\` ` : '';
   const remediation = items.length === 1
-    ? { added: 'added on the server → added to the repo.', changed: 'changed on the server → the repo takes the server\'s version.', deleted: 'deleted on the server → deleted from the repo.' }[how(items[0])]
+    ? named + { added: 'added on the server → added to the repo.', changed: 'changed on the server → the repo takes the server\'s version.', deleted: 'deleted on the server → deleted from the repo.' }[how(items[0])]
     : `${Object.entries(n).filter(([, v]) => v).map(([k, v]) => `${v} file(s) ${k}`).join(', ')} on the server → the repo takes the server's version of each.`;
   return { key, category: 'tracked', recoverable: true, paths: items.map((it) => it.path),
     ...(comp ? { root: comp.root, kind: comp.kind } : {}), remediation };
