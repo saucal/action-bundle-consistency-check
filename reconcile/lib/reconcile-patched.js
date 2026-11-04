@@ -58,7 +58,7 @@ async function reconcilePatched(o) {
   const composer = JSON.parse(composerText);
   const { composer: next } = upsertExtraPatches(composer, o.pkg, {
     description: bridge
-      ? `${BRIDGE}v${installed} → v${server}${edits.files.length ? ` + local edits (${edits.lines} lines)` : ''} (no published release has it)`
+      ? `${BRIDGE}v${installed} → v${server}${edits.files.length ? ` + local edits (${edits.lines} line${edits.lines === 1 ? '' : 's'})` : ''} (no published release has it)`
       : `Reconciled from server drift for ${o.slug}`,
     url: patchFile,
     depth: 2,

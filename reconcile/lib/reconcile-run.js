@@ -370,7 +370,7 @@ async function reconcileRun(o) {
     }
     if (!res.patchFile) continue;
     c.patchFile = res.patchFile;
-    const edits = c.bridged && c.localEdits && c.localEdits.files.length ? `${c.localEdits.lines} lines in ${c.localEdits.files.join(', ')}` : '';
+    const edits = c.bridged && c.localEdits && c.localEdits.files.length ? `${c.localEdits.lines} line${c.localEdits.lines === 1 ? '' : 's'} in ${c.localEdits.files.join(', ')}` : '';
     c.remediation = c.bridged && edits
       ? `v${c.bridged.to} on the server, which no published release has → pinned at v${c.bridged.from} (the newest published) with local edits (${edits}) plus the version bump to v${c.bridged.to}, both in \`${res.patchFile.replace(/^\.\//, '')}\`. Lifting the pin drops those edits: carry them over before the server moves to a release.`
       : c.bridged
@@ -598,7 +598,7 @@ async function reconcileRun(o) {
     if (c.bridged) {
       const e = c.localEdits;
       hold(c, e && e.files.length
-        ? `${c.key}: bridges to v${c.bridged.to} and carries ${e.lines} lines of local edits in ${e.files.join(', ')} — review`
+        ? `${c.key}: bridges to v${c.bridged.to} and carries ${e.lines} line${e.lines === 1 ? '' : 's'} of local edits in ${e.files.join(', ')} — review`
         : `${c.key}: bridges to v${c.bridged.to}, which no published release has — confirm the site should run it`);
     } else if (c.patchFile && c.editsVersion) hold(c, `${c.key}: its patch changes the plugin's version header — confirm the site should run it`);
     if (o.supersededKeys && o.supersededKeys.has(c.key) && c.patchFile) {
