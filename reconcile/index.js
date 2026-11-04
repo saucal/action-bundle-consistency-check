@@ -5,12 +5,14 @@ const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
 const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('./lib/report');
+const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
+const { splitHeal } = require('./lib/split-heal');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -74,13 +76,16 @@ async function lastBuild(treeRoot) {
 }
 
 /**
- * Rewrite the open reconciliation PR's title and description. Returns its number, '' when no PR
- * is open, or false when the update failed (the step is failed).
+ * Rewrite the open reconciliation PR's title and description, commenting when what it carries or
+ * its auto-merge verdict changed. Returns its number, '' when no PR is open, or false when the
+ * update failed (the step is failed).
  */
-async function updatePr(repo, ref, branch, body) {
-  const existing = await sh('gh', ['pr', 'list', '-R', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
-  const num = existing.out.trim();
-  if (!num) return '';
+async function updatePr(repo, ref, branch, body, runUrl) {
+  const existing = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0] // empty | {number, body}'], { silent: true });
+  let open = null;
+  try { open = existing.out.trim() ? JSON.parse(existing.out) : null; } catch { core.setFailed(`listing the open PR failed:\n${existing.out}`); return false; }
+  if (!open) return '';
+  const num = String(open.number);
   const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
   fs.writeFileSync(bodyFile, body);
   // The REST API (needs only `repo` scope), not `gh pr edit`: that queries `login` via GraphQL
@@ -88,6 +93,10 @@ async function updatePr(repo, ref, branch, body) {
   const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=Reconcile server drift on ${ref} [commit only]`, '-F', `body=@${bodyFile}`], { silent: true }); // the response is the whole PR as JSON
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
+  const trace = changeComment(readState(open.body), readState(body), runUrl);
+  if (trace && (await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${num}/comments`, '-f', `body=${trace}`], { silent: true })).code !== 0) {
+    core.warning(`Could not comment on PR #${num} about what changed.`);
+  }
   core.setOutput('pr', num);
   return num;
 }
@@ -186,24 +195,30 @@ async function closeStale(repo, branch, why) {
     const runOnce = (only, p = pending) => reconcileRun({ sourceDir, treeRoot, manifestText, contentDiffText, resolvers, runner, adopt, coreVersionRemote, coreManagedByHost, isTracked, vulnCheck, only, pending: p || undefined });
     const supersededKeys = (r) => r.classified.filter((c) => c.category === 'superseded').map((c) => c.key);
     result = await runOnce();
-    // Mixed heal: merge the part that needs no review now; the rest is deferred, and the next run
-    // (which then sees only that) opens a PR for it. Start again from the clean branch tip, undoing
-    // only what this run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
+    // Mixed heal (see splitHeal): merge the part that needs no review now, defer the rest — or, when the
+    // tip already carries that part, heal everything in one held PR. Start again from the clean branch
+    // tip, undoing only what a run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
     if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
       // Ask git first: an item it refuses is in no commit, so no later run can open a PR for it either.
       const before = result.classified.filter((c) => c.recoverable);
       await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
       const refused = before.filter((c) => !c.recoverable);
       const refusedNotes = result.security.warn.filter((h) => h.notInPr); // the rerun scans only what it heals
-      await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
-      // -x within these paths only: adopted dirs are usually gitignored (plugins/).
-      await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(result.trackedPaths || []), ...(result.adoptedPaths || [])], cwd);
       const held = result.autoMerge.reasons; // why run 1 held each item the rerun defers (a CVE, an adoption)
-      result = await runOnce(new Set([...result.autoMerge.eligible, ...supersededKeys(result)]));
-      result.classified = keepRefused(result.classified, refused);
-      result.security.warn.push(...refusedNotes);
-      for (const c of result.classified.filter((x) => x.category === 'deferred')) {
-        c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+      const split = await splitHeal(result, { runOnce, log: core.info,
+        stage: (r) => stageOutputs(cwd, r, isTracked, (args) => sh('git', args, { cwd })),
+        undo: async (r) => {
+          await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
+          // -x within these paths only: adopted dirs are usually gitignored (plugins/).
+          await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(r.trackedPaths || []), ...(r.adoptedPaths || [])], cwd);
+        } });
+      result = split.result;
+      if (!split.all) { // the full heal defers nothing and stages (and refuses) for itself
+        result.classified = keepRefused(result.classified, refused);
+        result.security.warn.push(...refusedNotes);
+        for (const c of result.classified.filter((x) => x.category === 'deferred')) {
+          c.held = held.filter((r) => r.startsWith(`${c.key}: `)).map((r) => r.slice(c.key.length + 2)).join('; ');
+        }
       }
       core.info(result.autoMerge.ok
         ? `Mixed heal: merging ${result.autoMerge.eligible.join(', ')} now; the rest waits for the next run's review PR.`
@@ -348,6 +363,9 @@ async function closeStale(repo, branch, why) {
     : autoMerge && autoMerge.ok
       ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
       : heldNote(reasonLines)) + body;
+  // Read back by the next run that rewrites the PR (pr-trace).
+  body += stateMarker(prState(classified, { auto: autoMergeOn && !!(autoMerge && autoMerge.ok),
+    reasons: autoMergeOn ? (autoMerge && autoMerge.reasons) || [] : ['auto-merge is off for this repo'] }));
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -372,7 +390,7 @@ async function closeStale(repo, branch, why) {
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
     if (suspicious) {
-      await updatePr(repo, ref, branch, body); // the open PR says what was found now
+      await updatePr(repo, ref, branch, body, runUrl); // the open PR says what was found now
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
@@ -426,7 +444,7 @@ async function closeStale(repo, branch, why) {
   core.setOutput('build-sha', buildSha);
 
   // 4. Upsert the PR via gh (GH_TOKEN is in env); the description is rewritten every run.
-  const updated = await updatePr(repo, ref, branch, body);
+  const updated = await updatePr(repo, ref, branch, body, runUrl);
   if (updated === false) return;
   if (!updated) {
     const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-body-${ref}.md`);
