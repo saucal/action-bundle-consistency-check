@@ -595,9 +595,12 @@ async function reconcileRun(o) {
     if (c.newRequire || c.downgrade || c.coreVersion || String(c.category).startsWith('adopted')) {
       if (!c.vulns) hold(c, `${c.key}: vulnerability check unavailable`);
       else if (c.vulns.length) {
-        // The highest fixed_in is the first version that clears them all.
+        // The highest fixed_in clears every match that lists one; matches without one stay named.
         const fixedIn = c.vulns.map((v) => v.fixed_in).filter(Boolean).sort(compareVersions).pop();
-        hold(c, `${c.key}: known vulnerabilit${c.vulns.length > 1 ? 'ies' : 'y'} at v${c.vulnVersion || '?'} — ${c.vulns.map((v) => v.cve || v.id).join(', ')}${fixedIn ? ` (fixed in v${fixedIn})` : ''}`);
+        const unfixed = c.vulns.filter((v) => !v.fixed_in).map((v) => v.cve || v.id);
+        const fix = !fixedIn ? '' : !unfixed.length ? ` (fixed in v${fixedIn})`
+          : ` (fixed in v${fixedIn} for ${c.vulns.length - unfixed.length} of ${c.vulns.length}; no fix listed for ${unfixed.join(', ')})`;
+        hold(c, `${c.key}: known vulnerabilit${c.vulns.length > 1 ? 'ies' : 'y'} at v${c.vulnVersion || '?'} — ${c.vulns.map((v) => v.cve || v.id).join(', ')}${fix}`);
       }
     }
     if (c.delta && c.delta.holds.length) hold(c, `${c.key}: ${[...new Set(c.delta.holds.map((h) => h.rule))].join(', ')}`);
