@@ -369,6 +369,24 @@ test('security: a clean adoption has no critical findings', async () => {
   assert.strictEqual(res.classified.find((x) => x.key === 'premiumplug').category, 'adopted');
 });
 
+test('security: an adoption with inert attack signatures is held with its own reason naming them', async () => {
+  const treeRoot = premiumTree();
+  // Never called, commented: no critical hit, but the decode/eval signatures still show.
+  fs.writeFileSync(path.join(treeRoot, 'plugins', 'premiumplug', 'premiumplug.php'),
+    "<?php\n$k = base64_decode('aGVsbG8=');\n// eval($k);\n");
+  const res = await reconcileRun({ sourceDir: tmpSource(), treeRoot, manifestText: premiumManifest, resolvers: noResolve, runner: showMissing(), adopt: true,
+    vulnCheck: async (i) => i.map(() => ({ matches: [] })) });
+  assert.strictEqual(res.classified.find((x) => x.key === 'premiumplug').category, 'adopted');
+  assert.deepStrictEqual(res.security.critical, []);
+  assert.deepStrictEqual(res.autoMerge.reasons, ['premiumplug: adopts server files', 'premiumplug: potential attack signatures (decode, eval) — review']);
+});
+
+test('security: a clean adoption gets no attack-signature reason', async () => {
+  const res = await reconcileRun({ sourceDir: tmpSource(), treeRoot: premiumTree(), manifestText: premiumManifest, resolvers: noResolve, runner: showMissing(), adopt: true,
+    vulnCheck: async (i) => i.map(() => ({ matches: [] })) });
+  assert.deepStrictEqual(res.autoMerge.reasons, ['premiumplug: adopts server files']);
+});
+
 // --- WordPress core (class 4) ------------------------------------------------------------
 function coreSource(version) {
   const dir = tmpSource();

@@ -151,3 +151,12 @@ test('assessDiff: risky shapes hold even when no other rule fires (new files, mu
   assert.ok(rules('client-mu-plugins/y.php', ['$c = $_SERVER["HTTP_X_C"];']).includes('request-data'));
   assert.deepStrictEqual(rules('plugins/x/x.php', ['if ( empty( $rule ) ) { return; } // hotfix']), []);
 });
+
+test('scanText attack mode: decode/eval/chr-chain signatures as warn on PHP, raw per line (comments too)', () => {
+  const src = "<?php\n$x = base64_decode('aGk=');\n// eval($x);\n$f = chr(101).chr(118).chr(97).chr(108);\n";
+  assert.deepStrictEqual(rules(src), [], 'default mode: none of these are RULES');
+  const hits = scanText(src, 'p.php', true);
+  assert.deepStrictEqual(hits.map((h) => `${h.rule}@${h.line}`), ['decode@2', 'eval@3', 'chr-chain@4']);
+  assert.ok(hits.every((h) => h.severity === 'warn'));
+  assert.deepStrictEqual(scanText("const s = atob('aGk=');", 'app.js', true), [], 'PHP files only');
+});
