@@ -156,9 +156,24 @@ and are never merged.
 
 ### Commits not deployed yet
 
-When the branch is ahead of the last deployed commit, the heal is built on the deployed commit
-(parity, what the built repo records: the heal itself, as the merge also holds the undeployed work)
-and the undeployed commits are applied after it with `[skip deploy]`; the next Deploy ships only those commits.
+When the branch is ahead of the last deployed commit D (undeployed commits ending in U), the heal R is
+built on D, and the graph is:
+
+```
+FT  merge(RM, U)  final tip: PR from selfheal-undeployed-{ref}, never auto-merged
+RM  merge(D, R)   "reconciled on top of the old tip": what the built repo records (R's tree)
+R   the heal on D
+```
+
+A heal that needs no review is verified on RM, and RM is recorded as deployed. Nothing lands on
+`{ref}`. The PR merging FT goes to the engineers who made the undeployed commits: it is assigned to
+them, they are asked to review it, and it is labelled `self-heal/undeployed`. Merging it runs a
+normal Deploy that ships those commits on top of the heal. Until then, a Deploy of `{ref}` is refused
+(it would undo the heal), and new drift opens no second heal. The check comments on the waiting PR
+instead. The PR is closed once the built repo no longer records RM.
+
+A held heal keeps the single reconciliation PR, with FT as its head (`[commit only]`). Merged by hand,
+it records RM, and the undeployed commits wait for the next Deploy.
 
 ### The PR
 
