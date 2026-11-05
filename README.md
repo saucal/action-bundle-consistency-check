@@ -160,20 +160,36 @@ When the branch is ahead of the last deployed commit D (undeployed commits endin
 built on D, and the graph is:
 
 ```
-FT  merge(RM, U)  final tip: PR from selfheal-undeployed-{ref}, never auto-merged
-RM  merge(D, R)   "reconciled on top of the old tip": what the built repo records (R's tree)
+merge(U, RM)       final tip: GitHub's merge button, when the engineers merge the PR
+RM  merge(D, R)    "reconciled on top of the old tip": the PR head, what the built repo records (R's tree)
 R   the heal on D
 ```
 
-A heal that needs no review is verified on RM, and RM is recorded as deployed. Nothing lands on
-`{ref}`. The PR merging FT goes to the engineers who made the undeployed commits: it is assigned to
-them, they are asked to review it, and it is labelled `self-heal/undeployed`. Merging it runs a
-normal Deploy that ships those commits on top of the heal. Until then, a Deploy of `{ref}` is refused
-(it would undo the heal), and new drift opens no second heal. The check comments on the waiting PR
-instead. The PR is closed once the built repo no longer records RM.
+The PR from `selfheal-undeployed-{ref}` has RM itself as its head, so its merge button writes the final
+tip. Only when git can't merge RM and U into exactly the heal replayed on U (a conflict in
+`composer.json`, `composer.lock`, `patches.lock.json`..., or a clean merge that differs) does a resolving
+merge FT = merge(RM, U) with that tree go on top. FT's tree is the heal on U, made as before (drifted
+code the undeployed commits also changed is held for review).
 
-A held heal keeps the single reconciliation PR, with FT as its head (`[commit only]`). Merged by hand,
-it records RM, and the undeployed commits wait for the next Deploy.
+A heal that needs no review is verified on RM, and RM is recorded as deployed. Nothing lands on
+`{ref}`. The PR goes to the engineers who made the undeployed commits: it is assigned to them, they
+are asked to review it, and it is labelled `self-heal/undeployed`. Merging it runs a normal Deploy that
+ships those commits on top of the heal. Until then, a Deploy of `{ref}` is refused (it would undo the
+heal).
+
+- **New drift while the PR waits** joins it in place (one PR per ref). The heal R2 is built on the record
+  RM, RM2 = merge(RM, R2) is recorded once verified, and the PR head moves to RM2 (or to FT2 = merge(RM2,
+  FT), when the head was FT) by adding commits only, never a force push. The heal on the tip is built on
+  what merging the PR makes, so it keeps the earlier heals. A comment names what joined. New drift that
+  needs a review can't join (merging the PR deploys): the check comments on the PR and stays red.
+- **Closed without merging**: while the built repo still records its heal and `{ref}` lacks it, the next
+  check (green or not) opens a fresh PR from the same branch that links the closed one (a closed PR is
+  never reopened), assigns, labels and announces it again. A forced Deploy is the deliberate way out.
+- The PR is closed once the built repo records something its head doesn't contain (e.g. a forced
+  Deploy), or when none of its heals was ever recorded and the record is on `{ref}` (its verify failed).
+
+A held heal keeps the single reconciliation PR, with the same head rule (RM, or FT on a conflict) and
+`[commit only]`. Merged by hand, it records RM, and the undeployed commits wait for the next Deploy.
 
 ### The PR
 

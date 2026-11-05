@@ -19,12 +19,50 @@ const engineerLogins = (lines, me = '') => [...new Set(String(lines).split('\n')
   .filter((l) => /^[A-Za-z0-9-]+(\[bot\])?$/.test(l) && l !== me && l !== 'web-flow' && !l.endsWith('[bot]')))];
 
 /** The PR body's opening: who it is for, what is recorded, and what a Deploy does meanwhile. */
-const tipNote = (ref, { commits, since, rm, logins }) => [
+const tipNote = (ref, { commits, since, rm, logins, joined = false }) => [
   `## ⚠️ ${commits} commit(s) on \`${ref}\` were not deployed when the server was healed`, '',
   `${logins.length ? `For ${logins.map((l) => `@${l}`).join(', ')}: these are your commits.` : '**No GitHub user was found for these commits: assign this PR by hand.**'} `
-  + `The server's drift is healed on the last deployed commit (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `
+  + (joined
+    ? `New server drift joined this PR: it is healed on the heal recorded before (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `
+    : `The server's drift is healed on the last deployed commit (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `)
   + `This PR merges your undeployed commits on top of that heal. **It is never merged automatically**: merging it runs a normal Deploy of \`${ref}\` that ships them.`, '',
-  `Until it merges, a Deploy of \`${ref}\` is refused (it would undo the heal), and the self-heal makes no other heal. Push further work to \`${ref}\` as usual: it ships with this merge. `
+  `Until it merges, a Deploy of \`${ref}\` is refused (it would undo the heal). New server drift that needs no review joins this PR (a comment says what joined); drift that needs a review waits for this merge. Push further work to \`${ref}\` as usual: it ships with this merge. `
   + 'If the heal left items on the server for review (below), that Deploy is refused on them until they are committed or ignored.', '', ''].join('\n');
 
-module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote };
+/**
+ * The trace comment when new drift joins the open PR in place: what joined, the new heal and where the
+ * head moved (by adding commits only). Items come from the body's state marker (pr-trace).
+ */
+const joinedComment = (old, now, { prior, rm, from, to, runUrl }) => {
+  const joined = ((now && now.items) || []).filter((k) => !((old && old.items) || []).includes(k));
+  return ['New server drift joined this PR in place:', '',
+    `- Joined: ${joined.length ? joined.map((k) => `\`${k}\``).join(', ') : '(no new item: the same items changed again on the server)'}`,
+    `- The heal \`${rm.slice(0, 7)}\` is built on the recorded heal \`${prior.slice(0, 7)}\`; the built repo records it once a build of it reproduces the server.`,
+    `- Head: \`${from.slice(0, 7)}\` → \`${to.slice(0, 7)}\` (commits added on top, no force push). Still never merged automatically.`,
+    '', `From the [consistency check run](${runUrl}).`].join('\n');
+};
+
+/** The opening of the fresh PR that replaces an engineers' PR closed without merging. */
+const recoveredNote = (ref, closed, record) => [
+  `## ⚠️ Replaces #${closed}, closed without merging`, '',
+  `#${closed} was closed, but the built repo still records its heal \`${record.slice(0, 7)}\` as deployed, and \`${ref}\` does not contain it: `
+  + `until this merges, a Deploy of \`${ref}\` is refused. A closed PR is never reopened, so the self-heal opened this one from the same branch. `
+  + `If the heal must go instead, a forced Deploy (disable-consistency-check) is the deliberate rollback; this PR then closes on the next check.`, '', ''].join('\n');
+
+/**
+ * What to do with the open engineers' PR given the record (the built repo's last build source):
+ * 'keep' while it carries the record; 'stale' once the record is something its head doesn't contain;
+ * 'unrecorded' when none of its heals was recorded and the record is on {ref} (rebuild from the record).
+ * A containment the API could not answer (null) never closes it: closing deletes the branch keeping RM.
+ * @param {{ rm: string }} pr  @param {string} record  @param {{ inHead: boolean|null, inRef: boolean|null }} where
+ */
+const tipPrVerdict = (pr, record, { inHead, inRef }) => {
+  if (!record || inHead === null) return 'keep';
+  if (!inHead) return 'stale';
+  return pr.rm !== record && inRef === true ? 'unrecorded' : 'keep';
+};
+
+/** The newest closed engineers' PR is recovered when it was not merged, its heal is still the record and {ref} lacks it. */
+const recoverable = (closed, record, inRef) => !!(closed && record && !closed.merged && closed.rm === record && inRef === false);
+
+module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable };
