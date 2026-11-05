@@ -62,7 +62,28 @@ const tipPrVerdict = (pr, record, { inHead, inRef }) => {
   return pr.rm !== record && inRef === true ? 'unrecorded' : 'keep';
 };
 
-/** The newest closed engineers' PR is recovered when it was not merged, its heal is still the record and {ref} lacks it. */
-const recoverable = (closed, record, inRef) => !!(closed && record && !closed.merged && closed.rm === record && inRef === false);
+/**
+ * The newest closed engineers' PR is recovered when it was not merged, its head still carries the record
+ * (the record is its heal, or an earlier one when a newer joined heal was never verified) and {ref} lacks
+ * it. The same containment the open PR's verdict uses; an unanswered API (null) never recovers.
+ */
+const recoverable = (closed, record, { inHead, inRef } = {}) => !!(closed && record && !closed.merged && inHead === true && inRef === false);
 
-module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable };
+/** The PR listing gh returned ({ code, out }): the PRs, or a throw when the listing failed (never "none"). */
+const parseTipPrs = ({ code, out }, what) => {
+  if (code !== 0) throw new Error(`listing the ${what} failed, so it is unknown whether an engineers' PR waits; not healing this run:\n${out}`);
+  if (!String(out).trim()) return [];
+  try {
+    const prs = JSON.parse(out);
+    if (Array.isArray(prs)) return prs;
+  } catch { /* below */ }
+  throw new Error(`listing the ${what} returned something unreadable; not healing this run:\n${out}`);
+};
+
+/** The "Replaces #N" opening of a PR that replaced a closed one, from its current body ('' when none). */
+const keptReplacesNote = (body) => {
+  const m = /^## ⚠️ Replaces #\d+, closed without merging\n\n[^\n]*\n\n/m.exec(String(body || ''));
+  return m ? m[0] : '';
+};
+
+module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote };

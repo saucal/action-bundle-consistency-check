@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
 const { tipHead, materializeTip, healOf, isAncestor } = require('../lib/tip-head');
-const { tipPrVerdict, recoverable, joinedComment, recoveredNote } = require('../lib/undeployed-pr');
+const { tipPrVerdict, recoverable, joinedComment, recoveredNote, parseTipPrs, keptReplacesNote } = require('../lib/undeployed-pr');
 
 // A scratch repo built with the same commit-tree calls index.js makes.
 function repo() {
@@ -131,17 +131,30 @@ test('the open engineers\' PR: kept while it carries the record, closed when sta
   assert.strictEqual(tipPrVerdict(pr, 'd', { inHead: true, inRef: null }), 'keep');
 });
 
-test('decision 2: a closed engineers\' PR is recovered only when unmerged, its heal is the record and {ref} lacks it', () => {
-  const closed = { number: '7', rm: 'rm', merged: false };
-  assert.strictEqual(recoverable(closed, 'rm', false), true);
-  assert.strictEqual(recoverable({ ...closed, merged: true }, 'rm', false), false);
-  assert.strictEqual(recoverable(closed, 'other', false), false); // closed as stale by the self-heal
-  assert.strictEqual(recoverable(closed, 'rm', true), false); // its heal reached {ref} another way
-  assert.strictEqual(recoverable(null, 'rm', false), false);
-  assert.strictEqual(recoverable(closed, 'rm', null), false); // the API could not answer
+test('decision 2: a closed engineers\' PR is recovered while its head carries the record and {ref} lacks it', () => {
+  const closed = { number: '7', rm: 'rm2', merged: false };
+  assert.strictEqual(recoverable(closed, 'rm2', { inHead: true, inRef: false }), true);
+  // RM2 joined but was never verified (record still RM) when it was closed: recovered too, not stuck red
+  assert.strictEqual(recoverable(closed, 'rm', { inHead: true, inRef: false }), true);
+  assert.strictEqual(recoverable({ ...closed, merged: true }, 'rm2', { inHead: true, inRef: false }), false);
+  assert.strictEqual(recoverable(closed, 'other', { inHead: false, inRef: false }), false); // closed as stale by the self-heal
+  assert.strictEqual(recoverable(closed, 'rm2', { inHead: true, inRef: true }), false); // its heal reached {ref} another way
+  assert.strictEqual(recoverable(null, 'rm2', { inHead: true, inRef: false }), false);
+  assert.strictEqual(recoverable(closed, 'rm2', { inHead: null, inRef: false }), false); // the API could not answer
+  assert.strictEqual(recoverable(closed, 'rm2', { inHead: true, inRef: null }), false);
   const note = recoveredNote('main', '7', 'a'.repeat(40));
   assert.match(note, /Replaces #7, closed without merging/);
   assert.match(note, /never reopened/);
+  // kept when a join rewrites the body
+  assert.strictEqual(keptReplacesNote(`${note}## ⚠️ 1 commit(s) ...`), note);
+  assert.strictEqual(keptReplacesNote('## ⚠️ 1 commit(s) on main were not deployed'), '');
+});
+
+test('a failed PR listing is never "no PR waits": it throws', () => {
+  assert.deepStrictEqual(parseTipPrs({ code: 0, out: '' }, 'open PRs'), []);
+  assert.deepStrictEqual(parseTipPrs({ code: 0, out: '[{"number":3}]' }, 'open PRs'), [{ number: 3 }]);
+  assert.throws(() => parseTipPrs({ code: 1, out: 'HTTP 502' }, 'open PRs from selfheal-undeployed-main'), /listing the open PRs from selfheal-undeployed-main failed.*not healing/s);
+  assert.throws(() => parseTipPrs({ code: 0, out: '{"message":"Bad credentials"}' }, 'open PRs'), /unreadable/);
 });
 
 test('decision 3: the trace comment names what joined and where the head moved', () => {

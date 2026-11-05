@@ -14,7 +14,7 @@ const { undeployed, recorded } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
 const { endRun, isRecovery } = require('./lib/outcome');
-const { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable } = require('./lib/undeployed-pr');
+const { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote } = require('./lib/undeployed-pr');
 const { isHealSubject, healOf, materializeTip, tipHead } = require('./lib/tip-head');
 
 function env(name, def = '') { return process.env[name] || def; }
@@ -144,8 +144,8 @@ async function healOfHead(repo, head) {
 async function tipPrs(repo, tipBranch, state) {
   const r = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${tipBranch}&state=${state}&per_page=20`,
     '-q', '[.[] | {number, head: .head.sha, body, merged: (.merged_at != null)}] | sort_by(-.number)'], { silent: true });
-  let prs = [];
-  try { prs = r.code === 0 && r.out.trim() ? JSON.parse(r.out) : []; } catch { prs = []; }
+  // A failed listing is not "no PR": it throws (the step fails), like updatePr, instead of healing as if none waited.
+  const prs = parseTipPrs(r, `${state} PRs from ${tipBranch}`);
   for (const pr of prs) { pr.number = String(pr.number); pr.rm = await healOfHead(repo, pr.head); }
   return prs;
 }
@@ -175,7 +175,7 @@ async function settleTipPr(repo, ref, tipBranch, record) {
 
 /**
  * Owner decision (2026-11-04): an engineers' PR closed without merging must not leave the heal stuck.
- * When the newest such PR's heal is still the record and {ref} doesn't contain it, open a fresh PR from
+ * When the newest such PR still carries the record and {ref} doesn't contain it, open a fresh PR from
  * the same branch (a closed PR is never reopened or repurposed), linking the closed one, routed and
  * announced again. The branch is recreated at the closed head if it was deleted.
  * @returns the fresh PR ({ number, head, rm, body, recovered }), or null
@@ -183,7 +183,7 @@ async function settleTipPr(repo, ref, tipBranch, record) {
 async function recoverTipPr(repo, ref, tipBranch, record) {
   if (!record) return null;
   const closed = (await tipPrs(repo, tipBranch, 'closed'))[0];
-  if (!recoverable(closed, record, closed ? await contains(repo, record, ref) : null)) return null;
+  if (!recoverable(closed, record, closed ? { inHead: await contains(repo, record, closed.head), inRef: await contains(repo, record, ref) } : {})) return null;
   const quiet = { silent: true };
   const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${tipBranch}`, '-q', '.object.sha'], quiet)).out.trim();
   let head = closed.head;
@@ -200,13 +200,20 @@ async function recoverTipPr(repo, ref, tipBranch, record) {
   const num = (created.out.match(/\/pull\/(\d+)/) || [])[1];
   if (created.code !== 0 || !num) { core.warning(`Could not open a fresh PR for closed #${closed.number}:\n${created.out}`); return null; }
   await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${closed.number}/comments`, '-f', `body=Closed without merging, but the built repo still records its heal ${record.slice(0, 7)}: the self-heal opened #${num} in its place (a closed PR is never reopened).`], quiet);
-  const logins = (await sh('gh', ['api', `repos/${repo}/issues/${closed.number}`, '-q', '.assignees[].login'], quiet)).out.split('\n').map((l) => l.trim()).filter(Boolean);
+  let logins = (await sh('gh', ['api', `repos/${repo}/issues/${closed.number}`, '-q', '.assignees[].login'], quiet)).out.split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9-]+$/.test(l));
+  // Nobody assigned on the closed PR: the undeployed commits' authors, as for a new PR (record...ref = U's commits since D).
+  if (!logins.length) {
+    logins = engineerLogins((await sh('gh', ['api', `repos/${repo}/compare/${record}...${ref}`, '-q', '.commits[] | (.author.login // empty), (.committer.login // empty)'], quiet)).out,
+      (await sh('gh', ['api', 'user', '-q', '.login'], quiet)).out.trim());
+  }
   await routeTipPr(repo, num, logins);
   core.warning(`Engineers' PR #${closed.number} was closed without merging while ${ref} still lacks the recorded heal ${record.slice(0, 7)}: opened #${num} in its place.`);
   core.setOutput('undeployed-pr', num);
   core.setOutput('undeployed-pr-recovered', closed.number);
   core.setOutput('engineers', logins.map((l) => `@${l}`).join(', '));
-  return { number: num, head, rm: record, body: fs.readFileSync(bodyFile, 'utf8'), recovered: closed.number };
+  // Its newest heal, which may be newer than the record (a heal that joined and was never verified): the
+  // drift path then refuses, as for an open PR in that state.
+  return { number: num, head, rm: await healOfHead(repo, head), body: fs.readFileSync(bodyFile, 'utf8'), recovered: closed.number };
 }
 
 /** Route the undeployed-tip PR to the engineers: label, assignees, review requests. Never fails the run. */
@@ -621,6 +628,8 @@ async function routeTipPr(repo, num, logins) {
     core.info(`PR head: ${layout === 'RM' ? `the heal ${buildSha.slice(0, 7)} itself (it merges cleanly with ${ref})` : `${headSha.slice(0, 7)}, a merge resolving the heal ${buildSha.slice(0, 7)} with ${ref}`}.`);
     await sh('git', ['checkout', '-q', '-B', prBranch, headSha], { cwd });
     if (toEngineers) body = tipNote(ref, { commits: pending.commits, since: pending.since, rm: buildSha, logins, joined: !!inPlace }) + body;
+    // A PR that replaced a closed one keeps saying so when a join rewrites its body.
+    if (toEngineers && inPlace) body = keptReplacesNote(inPlace.body) + body;
   }
   // Skip the push when the open branch already holds this exact result on this exact base:
   // a new commit every run would dismiss any review on the PR (stale-review ruleset).
