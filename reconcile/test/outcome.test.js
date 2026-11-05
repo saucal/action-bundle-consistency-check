@@ -100,3 +100,18 @@ test('action.yml: "Fail on drift" names the reconciliation PR when there is one'
   assert.strictEqual(run({ PR: '7', AUTO_MERGE: 'false' }), `${base}; the repo changes are held in PR #7 for review: https://github.test/o/r/pull/7`);
   assert.strictEqual(run({ PR: '7', AUTO_MERGE: 'true' }), `${base}; the repo changes are in PR #7, merged once a build of it reproduces the server: https://github.test/o/r/pull/7`);
 });
+
+// A merged-but-unrecorded heal with an item still needing a decision: the record is refused until it
+// is settled, so the notice must not claim it is being recorded. index.js counts what remains first.
+test('merged heal not recorded: the notice claims the record only when nothing is left', () => {
+  const { recordNotice } = require('../lib/report');
+  const S = 'a'.repeat(40), M = 'b'.repeat(40);
+  assert.strictEqual(recordNotice('main', S, M, ''), "main already has the server's state in aaaaaaa, merged but not recorded in the built repo: recording its merge bbbbbbb. No PR, nothing deployed.");
+  assert.strictEqual(recordNotice('main', S, S, ''), "main already has the server's state in aaaaaaa, merged but not recorded in the built repo: recording it. No PR, nothing deployed.");
+  const waiting = recordNotice('main', S, M, '1 item(s) need a decision');
+  assert.doesNotMatch(waiting, /recording/);
+  assert.match(waiting, /the record \(bbbbbbb\) waits until the item\(s\) left in the job summary are settled\. No PR, nothing deployed\.$/);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  const at = src.indexOf('core.notice(recordNotice(ref, sha, rec, open));');
+  assert.ok(at > 0 && src.lastIndexOf('const open = remaining(result.classified);', at) > src.indexOf('if (merged) {'));
+});
