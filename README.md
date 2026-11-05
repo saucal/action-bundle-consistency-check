@@ -125,8 +125,8 @@ and opens a `reconciliation-{ref}` PR. Nothing is deployed to heal.
 It is driven by the reusable workflow `saucal/action-maintenance/.github/workflows/consistency-check.yml`,
 which passes the `reconcile` input from the `SAUCAL_CONSISTENCY_RECONCILE` variable and, for heals that
 need no review, verifies the PR head reproduces the server exactly (a zero-change dry run of its build)
-and merges it with a merge commit, `[commit only]`: the build is committed to the built repo, the
-server is not touched. The variables are documented in action-maintenance `docs/variables.md`.
+and merges it with a merge commit, `[commit only]`: the build is committed to the built repo, recorded
+as that merge commit, and the server is not touched. The variables are documented in action-maintenance `docs/variables.md`.
 
 ### What it does
 
@@ -157,8 +157,8 @@ and are never merged.
 ### Commits not deployed yet
 
 When the branch is ahead of the last deployed commit, the heal is built on the deployed commit
-(parity, what the built repo records) and the undeployed commits are applied after it with
-`[skip deploy]`; the next Deploy ships only those commits.
+(parity, what the built repo records: the heal itself, as the merge also holds the undeployed work)
+and the undeployed commits are applied after it with `[skip deploy]`; the next Deploy ships only those commits.
 
 ### The PR
 
