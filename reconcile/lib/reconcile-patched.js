@@ -1,7 +1,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { generatePatch, upsertExtraPatches } = require('./patch-gen');
+const { execFileSync } = require('child_process');
+const { generatePatch, upsertExtraPatches, patchEntries, isHealEntry } = require('./patch-gen');
 const { serializeComposer } = require('./composer');
 const { pluginVersion, themeVersion } = require('./extract-version');
 
@@ -16,28 +17,50 @@ const { pluginVersion, themeVersion } = require('./extract-version');
  * @param {() => Promise<boolean>} [o.ensurePatchSupport] called only once a real residual exists, before the patch is written
  * @param {boolean} [o.allowVersionGap] the server runs a version no registry offers: patch it on top of
  *   the installed (newest published) one, a bridge, instead of stopping at the version mismatch
- * @returns {Promise<{action:'patched'|'bridged'|'bump-only'|'version-mismatch'|'patch-unsupported', patchFile?:string, dropped?:string[], installed?:string, server?:string}>}
+ * @returns {Promise<{action:'patched'|'bridged'|'bump-only'|'version-mismatch'|'patch-unsupported'|'needs-resolution', patchFile?:string, dropped?:string[], kept?:string[], installed?:string, server?:string}>}
  */
 async function reconcilePatched(o) {
   const pluginRoot = o.pluginRoot || `plugins/${o.slug}`;
   const installedDir = path.join(o.projectDir, pluginRoot);
   const composerPath = path.join(o.projectDir, 'composer.json');
 
-  // 0. Drop any existing patch entry for this package so the bump-first reinstall
-  //    yields the TRUE published source (cweagans reapplies registered patches on
-  //    install/reinstall). Without this, an "already-patched refresh" would diff
-  //    against the previously-patched state and the regenerated patch would not
-  //    apply cleanly from pristine.
+  // Patches the heal did not write (a developer's) are never replaced: the heal's own patch is cut
+  // on top of them. One the server no longer carries (undone, or edited over) needs a human.
+  const composerBefore = fs.existsSync(composerPath) ? fs.readFileSync(composerPath, 'utf8') : '';
+  const kept = patchEntries(((composerBefore ? JSON.parse(composerBefore) : {}).extra || {}).patches?.[o.pkg])
+    .filter((e) => !isHealEntry(e, o.slug));
+  const keptUrls = kept.map(urlOf);
+  if (kept.length) {
+    const lost = kept.filter((e) => !serverCarries(o.projectDir, o.serverDir, e)).map(urlOf);
+    if (lost.length) return { action: 'needs-resolution', patches: lost, kept: keptUrls };
+  }
+
+  // 0. Drop the heal's own patch entry for this package so the bump-first reinstall
+  //    yields the published source plus the kept patches only (cweagans reapplies registered
+  //    patches on install/reinstall). Without this, an "already-patched refresh" would diff
+  //    against the previously-patched state and the regenerated patch would not apply.
   //    Remember the entry order first: the re-cut entry goes back where it was, not last.
-  const patchOrder = fs.existsSync(composerPath) ? Object.keys((JSON.parse(fs.readFileSync(composerPath, 'utf8')).extra || {}).patches || {}) : [];
-  const dropped = (await dropPatches(o.projectDir, o.pkg, o.runner)).map((e) => (typeof e === 'string' ? e : e && e.url)).filter(Boolean);
+  const patchOrder = composerBefore ? Object.keys((JSON.parse(composerBefore).extra || {}).patches || {}) : [];
+  const healFile = path.join(o.projectDir, 'patches', `${o.slug}.patch`);
+  const healBefore = fs.existsSync(healFile) ? fs.readFileSync(healFile) : null;
+  const dropped = (await dropPatches(o.projectDir, o.pkg, o.runner, o.slug)).map(urlOf).filter(Boolean);
+  // A kept patch that no longer fits: put the heal's earlier patch back and hand it to a human.
+  const unresolved = async (patches) => {
+    fs.writeFileSync(composerPath, composerBefore);
+    if (healBefore) fs.writeFileSync(healFile, healBefore); else fs.rmSync(healFile, { force: true });
+    await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
+    await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
+    return { action: 'needs-resolution', patches, kept: keptUrls };
+  };
 
-  // 1. Restore pristine published files (bump-first reinstall).
-  await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
+  // 1. Restore published files + kept patches (bump-first reinstall). It fails when a kept patch
+  //    no longer applies (e.g. Pass 1 moved the version).
+  const re = await o.runner.composer(['reinstall', o.pkg, '--no-progress'], { cwd: o.projectDir });
+  if (kept.length && re && re.code !== 0) return unresolved(keptUrls);
 
-  // 2. Residual diff: pristine(installed) -> server.
+  // 2. Residual diff: published + kept patches (installed) -> server.
   const patch = generatePatch(installedDir, o.serverDir, pluginRoot);
-  if (!patch.trim()) return { action: 'bump-only', dropped };
+  if (!patch.trim()) return { action: 'bump-only', dropped, kept: keptUrls };
 
   // A patch only describes edits ON TOP OF one version: the pristine and server headers must agree.
   const header = pluginRoot.startsWith('themes/') ? themeVersion : pluginVersion;
@@ -72,8 +95,31 @@ async function reconcilePatched(o) {
   // 4. Relock + apply.
   await o.runner.composer(['patches-relock'], { cwd: o.projectDir });
   await o.runner.composer(['patches-repatch'], { cwd: o.projectDir });
+  // The heal's patch must land on top of the kept ones (repatch's exit code doesn't say so).
+  if (kept.length && generatePatch(installedDir, o.serverDir, pluginRoot).trim()) return unresolved([...keptUrls, patchFile]);
 
-  return bridge ? { action: 'bridged', patchFile, installed, server, localEdits: edits } : { action: 'patched', patchFile, installed, server };
+  const k = kept.length ? { kept: keptUrls } : {};
+  return bridge ? { action: 'bridged', patchFile, installed, server, localEdits: edits, ...k } : { action: 'patched', patchFile, installed, server, ...k };
+}
+
+const urlOf = (e) => (typeof e === 'string' ? e : e && e.url);
+
+/**
+ * True when the server's copy still carries a local patch: it reverse-applies there. A patch that
+ * isn't a local file can't be checked, so it counts as not carried (held, never assumed).
+ */
+function serverCarries(projectDir, serverDir, entry) {
+  const url = urlOf(entry);
+  const file = url && !/^[a-z][a-z0-9+.-]*:/i.test(url) ? path.resolve(projectDir, url) : null;
+  if (!file || !fs.existsSync(file)) return false;
+  try {
+    // The ceiling keeps git from finding the repo serverDir sits in: inside one, paths outside the
+    // cwd are skipped and the check passes having applied nothing.
+    execFileSync('git', ['apply', '--check', '-R', `-p${(entry && entry.depth) || 1}`, file], {
+      cwd: serverDir, stdio: 'pipe', env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(serverDir)) },
+    });
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -99,22 +145,22 @@ function localEdits(patchText) {
 const BRIDGE = 'Bridges ';
 
 /**
- * Remove a package's extra.patches entries and their local patch files, then relock so they're no
- * longer applied. Returns the removed entries.
+ * Remove the heal's own extra.patches entry for a package (patches/<slug>.patch) and its file, then
+ * relock so it's no longer applied. Patches the heal did not write stay. Returns the removed entries.
  */
-async function dropPatches(projectDir, pkg, runner) {
+async function dropPatches(projectDir, pkg, runner, slug) {
   const composerPath = path.join(projectDir, 'composer.json');
   if (!fs.existsSync(composerPath)) return [];
   const text = fs.readFileSync(composerPath, 'utf8');
   const c = JSON.parse(text);
   if (!(c.extra && c.extra.patches && c.extra.patches[pkg])) return [];
-  const removed = [].concat(c.extra.patches[pkg]);
-  // Its local patch files go too: rewritten if a residual remains, orphaned otherwise.
-  for (const e of removed) {
-    const url = typeof e === 'string' ? e : e && e.url;
-    if (url && /^\.\/patches\/[^/]+$/.test(url)) fs.rmSync(path.join(projectDir, url), { force: true });
-  }
-  delete c.extra.patches[pkg];
+  const all = patchEntries(c.extra.patches[pkg]);
+  const removed = all.filter((e) => isHealEntry(e, slug));
+  if (!removed.length) return [];
+  // Its local patch file goes too: rewritten if a residual remains, orphaned otherwise.
+  for (const e of removed) fs.rmSync(path.join(projectDir, urlOf(e)), { force: true });
+  if (removed.length < all.length) c.extra.patches[pkg] = all.filter((e) => !isHealEntry(e, slug));
+  else delete c.extra.patches[pkg];
   if (!Object.keys(c.extra.patches).length) delete c.extra.patches;
   fs.writeFileSync(composerPath, serializeComposer(c, text));
   await runner.composer(['patches-relock'], { cwd: projectDir });

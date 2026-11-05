@@ -10,7 +10,7 @@ const { decideOutcome } = require('./outcome');
 const { reconcilePatched, dropPatches, BRIDGE } = require('./reconcile-patched');
 const { adoptComponent } = require('./adopt');
 const { isSensitive } = require('./detectors');
-const { generatePatch } = require('./patch-gen');
+const { generatePatch, patchEntries, isHealEntry } = require('./patch-gen');
 const { scanPath, assessDiff } = require('./suspicious');
 const { pluginVersion, themeVersion } = require('./extract-version');
 
@@ -161,7 +161,7 @@ async function reconcileRun(o) {
       if (!c.recoverable || !c.composerPackage) continue;
       const entries = [].concat(composer.extra.patches[c.composerPackage] || []);
       if (!entries.some((e) => e && String(e.description || '').startsWith(BRIDGE))) continue;
-      await dropPatches(o.sourceDir, c.composerPackage, o.runner);
+      await dropPatches(o.sourceDir, c.composerPackage, o.runner, c.key);
       applied.push(`bridge-dropped:${c.composerPackage}`);
     }
     composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
@@ -181,8 +181,9 @@ async function reconcileRun(o) {
   for (const c of classified) {
     if (!c.recoverable || !c.composerPackage || !composer) continue;
     if (c.category === 'removed') {
-      // Its patches go with it, or a later reinstall at another version would get them applied.
-      if (o.runner && (await dropPatches(o.sourceDir, c.composerPackage, o.runner)).length) {
+      // The heal's patch goes with it, or a later reinstall at another version would get it applied.
+      // A developer's patches stay: they're theirs to drop.
+      if (o.runner && (await dropPatches(o.sourceDir, c.composerPackage, o.runner, c.key)).length) {
         applied.push(`patches-dropped:${c.composerPackage}`);
         composer = JSON.parse(fs.readFileSync(composerPath, 'utf8'));
       }
@@ -348,6 +349,13 @@ async function reconcileRun(o) {
       allowVersionGap: !!c.bridge,
     });
     applied.push(`patched:${c.key}:${res.action}`);
+    if (res.action === 'needs-resolution') {
+      // A developer's patch is never replaced or dropped by the heal: it stays, and a human decides.
+      c.category = 'patch-needs-resolution';
+      c.recoverable = false;
+      c.remediation = `${c.key}: needs resolution: ${res.patches.map((u) => `\`${u.replace(/^\.\//, '')}\``).join(', ')} — the server's copy no longer matches the published release plus the project's own patches. Rebase the patch onto the server's edits (or drop it) by hand.`;
+      continue;
+    }
     if (res.action === 'version-mismatch') {
       c.category = 'patch-version-mismatch';
       c.recoverable = false;
@@ -360,7 +368,9 @@ async function reconcileRun(o) {
       const v = c.version || '?';
       const before = lockedBefore[c.composerPackage];
       const lock = before && before !== v ? ` (lock moved from v${before})` : '';
-      c.remediation = res.dropped && res.dropped.length
+      c.remediation = res.dropped && res.dropped.length && res.kept && res.kept.length
+        ? `v${v} on the server matches the release plus the project's patches again → the heal's patch ${res.dropped.map((u) => `\`${u.replace(/^\.\//, '')}\``).join(', ')} is removed; ${res.kept.map((u) => `\`${u.replace(/^\.\//, '')}\``).join(', ')} ${res.kept.length === 1 ? 'is' : 'are'} kept${lock}.`
+        : res.dropped && res.dropped.length
         ? `v${v} on the server is the stock release again → its patch ${res.dropped.map((u) => `\`${u.replace(/^\.\//, '')}\``).join(', ')} is removed and the package goes back to the stock v${v}${lock}.`
         : before === v ? `v${v} on the server → stays locked at v${v} (the server's files match that release exactly).`
           : `v${v} on the server → lock moved to v${v} (the server's files match that release exactly).`;
@@ -680,7 +690,9 @@ async function withdrawPatch(o, c) {
   const text = fs.readFileSync(composerPath, 'utf8');
   const cj = JSON.parse(text);
   if (cj.extra && cj.extra.patches) {
-    delete cj.extra.patches[c.composerPackage];
+    // Only the heal's own entry: patches it did not write stay.
+    const kept = patchEntries(cj.extra.patches[c.composerPackage]).filter((e) => !isHealEntry(e, c.key));
+    if (kept.length) cj.extra.patches[c.composerPackage] = kept; else delete cj.extra.patches[c.composerPackage];
     if (!Object.keys(cj.extra.patches).length) delete cj.extra.patches;
     fs.writeFileSync(composerPath, serializeComposer(cj, text));
   }

@@ -120,3 +120,15 @@ test('a diff over 1 MB comes out whole (execFileSync truncates at its default ma
   execFileSync('git', ['apply', '-p0', 'p.patch'], { cwd: work });
   assert.strictEqual(fs.readFileSync(path.join(work, 'plugins/big/big.txt'), 'utf8'), fs.readFileSync(path.join(b, 'big.txt'), 'utf8'));
 });
+
+test('upsertExtraPatches keeps patches it did not write, first, and replaces only the same file', () => {
+  const dev = { description: 'Developer fix', url: './patches/p-dev.patch', depth: 2 };
+  const heal = { description: 'Reconciled from server drift for p', url: './patches/p.patch', depth: 2 };
+  let r = upsertExtraPatches({ extra: { patches: { 'saucal/p': [dev] } } }, 'saucal/p', heal);
+  assert.deepStrictEqual(r.composer.extra.patches['saucal/p'], [dev, heal]);
+  r = upsertExtraPatches({ extra: { patches: { 'saucal/p': [{ ...heal, description: 'old' }, dev] } } }, 'saucal/p', heal);
+  assert.deepStrictEqual(r.composer.extra.patches['saucal/p'], [dev, heal]);
+  // cweagans' {description: url} map form is kept too
+  r = upsertExtraPatches({ extra: { patches: { 'saucal/p': { 'Developer fix': 'patches/p-dev.patch' } } } }, 'saucal/p', heal);
+  assert.deepStrictEqual(r.composer.extra.patches['saucal/p'], [{ description: 'Developer fix', url: 'patches/p-dev.patch' }, heal]);
+});

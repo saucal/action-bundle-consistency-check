@@ -54,7 +54,26 @@ function generatePatch(pristineDir, serverDir, pluginRelRoot) {
 }
 
 /**
- * Add or replace an extra.patches entry for a package. Returns a new object (input untouched).
+ * A package's extra.patches value as a list of entries; cweagans also takes a {description: url} map.
+ * @returns {Array<{description?:string,url:string,depth?:number}|string>}
+ */
+function patchEntries(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object') return Object.entries(value).map(([description, url]) => ({ description, url }));
+  return [value];
+}
+
+/** True when an extra.patches entry is the heal's own patch for slug (the file reconcilePatched writes). */
+// shortcut: a developer patch literally named patches/<slug>.patch is taken for the heal's own; rename it to keep it.
+function isHealEntry(entry, slug) {
+  const url = typeof entry === 'string' ? entry : entry && entry.url;
+  return !!url && String(url).replace(/^\.\//, '') === `patches/${slug}.patch`;
+}
+
+/**
+ * Add or replace the heal's extra.patches entry for a package, after every patch it did not write
+ * (a developer's patches are never replaced). Returns a new object (input untouched).
  * @param {object} composer parsed composer.json
  * @param {string} pkg
  * @param {{description:string,url:string,depth:number}} entry
@@ -65,9 +84,11 @@ function upsertExtraPatches(composer, pkg, entry) {
   next.extra = next.extra || {};
   next.extra.patches = next.extra.patches || {};
   const before = JSON.stringify(next.extra.patches[pkg] || null);
-  next.extra.patches[pkg] = [entry];
-  const changed = before !== JSON.stringify([entry]);
+  const url = String(entry.url).replace(/^\.\//, '');
+  const kept = patchEntries(next.extra.patches[pkg]).filter((e) => String(typeof e === 'string' ? e : e && e.url).replace(/^\.\//, '') !== url);
+  next.extra.patches[pkg] = [...kept, entry];
+  const changed = before !== JSON.stringify(next.extra.patches[pkg]);
   return { composer: next, changed };
 }
 
-module.exports = { generatePatch, upsertExtraPatches };
+module.exports = { generatePatch, upsertExtraPatches, patchEntries, isHealEntry };

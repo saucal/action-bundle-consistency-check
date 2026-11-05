@@ -9,6 +9,7 @@ const { reconcileRun } = require('../../lib/reconcile-run');
 const { makeRunner } = require('../../lib/runner');
 const { generatePatch } = require('../../lib/patch-gen');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 // Local, network-free resolver. Maps known slugs to {source, package, version}.
 // Package names match what make-project installs from path repos so composer can
@@ -339,6 +340,77 @@ test('patch dropped: server back to the stock release at the same version -> pat
   const pc = findByKey(res.classified, 'patchplug');
   assert.match(pc.remediation, /v1\.0\.0 on the server is the stock release again → its patch `patches\/patchplug\.patch` is removed and the package goes back to the stock v1\.0\.0\./);
   assert.doesNotMatch(pc.remediation, /lock moved/);
+});
+
+// --- 6b. developer patches are never replaced ---------------------------
+// patchplug ships 10 lines; a developer patch (patches/patchplug-dev.patch, not the heal's name)
+// edits line 2, the server's own edit lands at the end: far enough apart for clean context.
+const DEV_BODY = Array.from({ length: 10 }, (_, i) => `// line ${i + 1}`).join('\n') + '\n';
+function devProject({ healToo = false } = {}) {
+  const head = '<?php\n/**\n * Plugin Name: patchplug\n * Version: 1.0.0\n */\n';
+  const tmp = (n, t) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), n)); fs.writeFileSync(path.join(d, 'patchplug.php'), t); return d; };
+  const stock = head + DEV_BODY;
+  const dev = stock.replace('// line 2\n', '// line 2 DEV\n');
+  const patches = [{ pkg: 'saucal/patchplug', slug: 'patchplug', root: 'plugins/patchplug', file: 'patchplug-dev', patchText: generatePatch(tmp('pp-s-', stock), tmp('pp-d-', dev), 'plugins/patchplug') }];
+  if (healToo) patches.push({ pkg: 'saucal/patchplug', slug: 'patchplug', root: 'plugins/patchplug', patchText: generatePatch(tmp('pp-d-', dev), tmp('pp-h-', dev + '// HEAL-V1\n'), 'plugins/patchplug') });
+  const { dir } = makeProject({ plugins: [{ slug: 'patchplug', pkg: 'saucal/patchplug', version: '1.0.0', body: DEV_BODY }], patches });
+  return { dir, devText: read(path.join(dir, 'patches/patchplug-dev.patch')) };
+}
+const entryUrls = (dir) => JSON.parse(read(path.join(dir, 'composer.json'))).extra.patches['saucal/patchplug'].map((e) => e.url);
+
+test('developer patch + server edit elsewhere -> developer patch kept, the heal patch cut on top of it, after it', async () => {
+  for (const healToo of [false, true]) { // a heal patch from an earlier run is re-cut, the developer's stays
+    const { dir, devText } = devProject({ healToo });
+    const serverDir = stageServer(dir, (sv) => {
+      const f = path.join(sv, 'plugins/patchplug/patchplug.php');
+      fs.writeFileSync(f, read(f).replace('// HEAL-V1\n', '') + '// SERVER EDIT\n');
+    });
+    execFileSync('git', ['init', '-q'], { cwd: serverDir }); // the real tree is a git checkout
+    const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+    const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+    assert.ok(res.applied.includes('patched:patchplug:patched'), `applied: ${res.applied}`);
+    assert.deepStrictEqual(entryUrls(dir), ['./patches/patchplug-dev.patch', './patches/patchplug.patch']);
+    assert.strictEqual(read(path.join(dir, 'patches/patchplug-dev.patch')), devText, 'developer patch untouched');
+    const heal = read(path.join(dir, 'patches/patchplug.patch'));
+    assert.match(heal, /^\+\/\/ SERVER EDIT$/m);
+    assert.doesNotMatch(heal, /line 2/, 'the heal patch does not carry the developer edit');
+    assert.strictEqual(read(path.join(dir, 'plugins/patchplug/patchplug.php')), read(path.join(serverDir, 'plugins/patchplug/patchplug.php')));
+    assert.strictEqual(findByKey(res.classified, 'patchplug').verified, true);
+    assert.ok(res.autoMerge.eligible.includes('patchplug'), `reasons: ${res.autoMerge.reasons}`);
+  }
+});
+
+test('server undid / edited over a developer patch -> held "needs resolution", developer patch kept', async () => {
+  for (const edit of [(t) => t.replace('// line 2 DEV\n', '// line 2\n'), (t) => t.replace('// line 2 DEV\n', '// line 2 SERVER\n')]) {
+    const { dir, devText } = devProject({ healToo: true });
+    const composerBefore = read(path.join(dir, 'composer.json'));
+    const serverDir = stageServer(dir, (sv) => { const f = path.join(sv, 'plugins/patchplug/patchplug.php'); fs.writeFileSync(f, edit(read(f))); });
+    execFileSync('git', ['init', '-q'], { cwd: serverDir }); // inside a repo an unscoped git apply --check passes vacuously
+    const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+    const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+    const pc = findByKey(res.classified, 'patchplug');
+    assert.strictEqual(pc.category, 'patch-needs-resolution');
+    assert.match(pc.remediation, /needs resolution: `patches\/patchplug-dev\.patch`/);
+    assert.strictEqual(res.autoMerge.ok, false);
+    assert.strictEqual(read(path.join(dir, 'patches/patchplug-dev.patch')), devText);
+    assert.ok(fs.existsSync(path.join(dir, 'patches/patchplug.patch')), 'the earlier heal patch is not dropped either');
+    assert.strictEqual(read(path.join(dir, 'composer.json')), composerBefore);
+  }
+});
+
+test('removed package with a developer and a heal patch -> only the heal patch is dropped', async () => {
+  const { dir, devText } = devProject({ healToo: true });
+  const serverDir = stageServer(dir, (sv) => fs.rmSync(path.join(sv, 'plugins/patchplug'), { recursive: true }));
+  const { manifestText, contentDiffText } = deriveDrift(dir, serverDir);
+  const res = await reconcileRun({ sourceDir: dir, treeRoot: serverDir, manifestText, contentDiffText, resolvers: fakeResolvers, runner: makeRunner() });
+
+  assert.ok(res.applied.includes('patches-dropped:saucal/patchplug'), `applied: ${res.applied}`);
+  assert.ok(res.applied.includes('remove:saucal/patchplug') && !res.applied.includes('remove:saucal/patchplug:lock-update-failed'), `applied: ${res.applied}`);
+  assert.deepStrictEqual(entryUrls(dir), ['./patches/patchplug-dev.patch']);
+  assert.ok(!fs.existsSync(path.join(dir, 'patches/patchplug.patch')));
+  assert.strictEqual(read(path.join(dir, 'patches/patchplug-dev.patch')), devText);
 });
 
 // --- 7. flag-only sensitive ---------------------------------------------

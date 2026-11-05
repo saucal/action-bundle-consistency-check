@@ -136,7 +136,9 @@ Each drifted path is classified, and each component is healed with the first str
    including plugins/themes on wpackagist or SatisPress that the repo doesn't require yet, removals,
    downgrades and `extra.wordpress-core`.
 2. **Patch** — a server edit to a registry package becomes a patch (`saucal/composer-patches` >=1.1.0,
-   added only when needed).
+   added only when needed). The heal owns only `patches/<slug>.patch`: a project's own patches for the
+   package are kept, and the heal's patch is cut on top of them and listed after them. When the server
+   no longer carries one of them (undone, or edited over), the item is held "needs resolution".
 3. **Tracked file** — a server edit to a file the repo already tracks is copied back.
 4. **Adoption** — server-only code copied into the repo; last resort, always left for review
    (`reconcile-adopt-non-composer`).

@@ -4,7 +4,8 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { reconcilePatched } = require('../lib/reconcile-patched');
+const { execFileSync } = require('child_process');
+const { reconcilePatched, dropPatches } = require('../lib/reconcile-patched');
 
 function mkdir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
@@ -150,4 +151,98 @@ test('reconcilePatched: a bridge that also carries code names its local edits; a
   ({ res, entry } = await run('<?php\n/**\n * Plugin Name: fakeplug\n * Version: 1.0.1\n */\n'));
   assert.deepStrictEqual(res.localEdits, { lines: 0, files: [] });
   assert.strictEqual(entry.description, 'Bridges v1.0.0 → v1.0.1 (no published release has it)');
+});
+
+// A developer patch (any name but the heal's patches/<slug>.patch) stays, first; the heal's goes after it.
+function devScaffold(withHeal) {
+  const projectDir = scaffoldProject();
+  const c = JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8'));
+  fs.mkdirSync(path.join(projectDir, 'patches'));
+  const dev = 'diff --git plugins/fakeplug/fakeplug.php plugins/fakeplug/fakeplug.php\n--- plugins/fakeplug/fakeplug.php\n+++ plugins/fakeplug/fakeplug.php\n@@ -1,3 +1,3 @@\n <?php\n-// one\n+// one DEV\n // two\n';
+  fs.writeFileSync(path.join(projectDir, 'patches/fakeplug-dev.patch'), dev);
+  c.extra = { patches: { 'saucal/fakeplug': [{ description: 'Developer fix', url: './patches/fakeplug-dev.patch', depth: 2 }] } };
+  if (withHeal) {
+    fs.writeFileSync(path.join(projectDir, 'patches/fakeplug.patch'), 'old heal patch\n');
+    c.extra.patches['saucal/fakeplug'].push({ description: 'Reconciled from server drift for fakeplug', url: './patches/fakeplug.patch', depth: 2 });
+  }
+  fs.writeFileSync(path.join(projectDir, 'composer.json'), JSON.stringify(c, null, 4) + '\n');
+  return { projectDir, dev };
+}
+const STOCK_PLUS_DEV = { 'fakeplug.php': '<?php\n// one DEV\n// two\n// three\n' };
+
+test('reconcilePatched: a developer patch is kept and the heal patch is cut on top of it, after it', async () => {
+  for (const withHeal of [false, true]) {
+    const { projectDir, dev } = devScaffold(withHeal);
+    const serverDir = mkdir('server-');
+    fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), '<?php\n// one DEV\n// two\n// three SERVER\n');
+    const runner = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: STOCK_PLUS_DEV });
+    const realRepatch = runner.composer;
+    runner.composer = (args, opts) => { // repatch = cweagans applying both patches: the server's copy
+      if (args[0] === 'patches-repatch') fs.copyFileSync(path.join(serverDir, 'fakeplug.php'), path.join(projectDir, 'plugins/fakeplug/fakeplug.php'));
+      return realRepatch(args, opts);
+    };
+    const res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, runner });
+
+    assert.strictEqual(res.action, 'patched');
+    assert.deepStrictEqual(res.kept, ['./patches/fakeplug-dev.patch']);
+    const entries = JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8')).extra.patches['saucal/fakeplug'];
+    assert.deepStrictEqual(entries.map((e) => e.url), ['./patches/fakeplug-dev.patch', './patches/fakeplug.patch']);
+    assert.strictEqual(entries[0].description, 'Developer fix');
+    assert.strictEqual(fs.readFileSync(path.join(projectDir, 'patches/fakeplug-dev.patch'), 'utf8'), dev);
+    const heal = fs.readFileSync(path.join(projectDir, 'patches/fakeplug.patch'), 'utf8');
+    assert.match(heal, /^-\/\/ three$/m);
+    assert.doesNotMatch(heal, /^[-+]\/\/ one/m, 'the heal patch is relative to stock + the developer patch');
+  }
+});
+
+test('reconcilePatched: the server undid a developer patch -> needs-resolution, nothing touched (also inside a git repo)', async () => {
+  const { projectDir } = devScaffold(true);
+  const composerBefore = fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8');
+  const repo = mkdir('built-');
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const serverDir = path.join(repo, 'plugins/fakeplug');
+  fs.mkdirSync(serverDir, { recursive: true });
+  fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), '<?php\n// one\n// two\n// three\n');
+  const runner = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: STOCK_PLUS_DEV });
+  const res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, runner });
+
+  assert.strictEqual(res.action, 'needs-resolution');
+  assert.deepStrictEqual(res.patches, ['./patches/fakeplug-dev.patch']);
+  assert.strictEqual(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8'), composerBefore);
+  assert.strictEqual(fs.readFileSync(path.join(projectDir, 'patches/fakeplug.patch'), 'utf8'), 'old heal patch\n');
+  assert.deepStrictEqual(runner.calls, []);
+});
+
+test('reconcilePatched: a developer patch that no longer applies on reinstall -> needs-resolution, the earlier heal patch put back', async () => {
+  const { projectDir } = devScaffold(true);
+  const composerBefore = fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8');
+  const serverDir = mkdir('server-');
+  fs.writeFileSync(path.join(serverDir, 'fakeplug.php'), '<?php\n// one DEV\n// two\n// three SERVER\n');
+  const runner = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: STOCK_PLUS_DEV });
+  const fake = runner.composer;
+  let first = true;
+  runner.composer = (args, opts) => {
+    if (args[0] === 'reinstall' && first) { first = false; runner.calls.push(args.join(' ')); return Promise.resolve({ code: 1, stdout: '', stderr: 'No available patcher' }); }
+    return fake(args, opts);
+  };
+  const res = await reconcilePatched({ projectDir, slug: 'fakeplug', pkg: 'saucal/fakeplug', serverDir, runner });
+
+  assert.strictEqual(res.action, 'needs-resolution');
+  assert.deepStrictEqual(res.patches, ['./patches/fakeplug-dev.patch']);
+  assert.strictEqual(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8'), composerBefore);
+  assert.strictEqual(fs.readFileSync(path.join(projectDir, 'patches/fakeplug.patch'), 'utf8'), 'old heal patch\n');
+});
+
+test('dropPatches: drops only the heal patch, never a developer one', async () => {
+  const { projectDir, dev } = devScaffold(true);
+  const runner = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: {} });
+  const removed = await dropPatches(projectDir, 'saucal/fakeplug', runner, 'fakeplug');
+  assert.deepStrictEqual(removed.map((e) => e.url), ['./patches/fakeplug.patch']);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(projectDir, 'composer.json'), 'utf8')).extra.patches['saucal/fakeplug'].map((e) => e.url), ['./patches/fakeplug-dev.patch']);
+  assert.strictEqual(fs.readFileSync(path.join(projectDir, 'patches/fakeplug-dev.patch'), 'utf8'), dev);
+  assert.ok(!fs.existsSync(path.join(projectDir, 'patches/fakeplug.patch')));
+  // a developer patch alone: nothing to drop, no relock
+  const again = makeFakeRunner({ projectDir, slug: 'fakeplug', pristineFiles: {} });
+  assert.deepStrictEqual(await dropPatches(projectDir, 'saucal/fakeplug', again, 'fakeplug'), []);
+  assert.deepStrictEqual(again.calls, []);
 });
