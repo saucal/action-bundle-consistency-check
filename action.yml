@@ -133,6 +133,12 @@ outputs:
   reconcile-pending-paths:
     description: "Newline-separated anchored paths the self-heal checks must not count this time (deferred, flagged or junk drift)."
     value: ${{ steps.reconcile.outputs.pending-paths }}
+  reconcile-undeployed-pr:
+    description: "With commits not deployed yet and a heal that needs no review: the PR merging them on top of the heal (never auto-merged; merging it deploys). Also set when new drift was refused because that PR still waits."
+    value: ${{ steps.reconcile.outputs.undeployed-pr }}
+  reconcile-engineers:
+    description: "The GitHub users ('@a, @b') the undeployed-tip PR is assigned to; empty when none was found."
+    value: ${{ steps.reconcile.outputs.engineers }}
   reconcile-suspicious:
     description: "'true' when server-derived content carries signals of compromised code — never merge, alert a human."
     value: ${{ steps.reconcile.outputs.suspicious }}
@@ -240,9 +246,12 @@ runs:
         PR: ${{ steps.reconcile.outputs.pr }}
         AUTO_MERGE: ${{ steps.reconcile.outputs.auto-merge }}
         PR_URL: "${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.reconcile.outputs.pr }}"
+        UNDEPLOYED_PR: ${{ steps.reconcile.outputs.undeployed-pr }}
+        REF: ${{ github.ref_name }}
       run: |
         msg="The server does not match the deployed build: see the consistency check step above."
-        if [ -n "$PR" ] && [ "$AUTO_MERGE" = "true" ]; then msg="${msg%.}; the repo changes are in PR #$PR, merged once a build of it reproduces the server: $PR_URL"
+        if [ -n "$UNDEPLOYED_PR" ]; then msg="${msg%.}; $REF has commits not deployed yet: the heal is recorded once a build of it reproduces the server, and PR #$PR (never auto-merged) merges those commits on top of it: $PR_URL"
+        elif [ -n "$PR" ] && [ "$AUTO_MERGE" = "true" ]; then msg="${msg%.}; the repo changes are in PR #$PR, merged once a build of it reproduces the server: $PR_URL"
         elif [ -n "$PR" ]; then msg="${msg%.}; the repo changes are held in PR #$PR for review: $PR_URL"; fi
         echo "::error::$msg"
         exit 1

@@ -13,14 +13,14 @@ function plain(fetchMsg, headMsg) {
   return { rev: async (r) => revs[r], msg: async (r) => msgs[r], baseSha: 'base' };
 }
 
-// Parity layout: F (HEAD) merges R (buildSha, on top of since) with the tip (base).
+// Parity layout: FT (HEAD) merges RM (buildSha = merge(since, R)) with the tip (base).
 function parity(fetchRMsg, rMsg) {
   const revs = {
     'FETCH_HEAD^{tree}': 'tF', 'HEAD^{tree}': 'tF', 'FETCH_HEAD^2': 'base',
-    'FETCH_HEAD^1^{tree}': 'tR', 'R^{tree}': 'tR', 'FETCH_HEAD^1^': 'since',
+    'FETCH_HEAD^1^{tree}': 'tR', 'RM^{tree}': 'tR', 'FETCH_HEAD^1^1': 'since', 'FETCH_HEAD^1^2^{tree}': 'tR',
   };
-  const msgs = { 'FETCH_HEAD^1': fetchRMsg, R: rMsg };
-  return { rev: async (r) => revs[r], msg: async (r) => msgs[r], baseSha: 'base', buildSha: 'R', since: 'since' };
+  const msgs = { 'FETCH_HEAD^1': fetchRMsg, RM: rMsg };
+  return { rev: async (r) => (r in revs ? revs[r] : `fatal: ${r}`), msg: async (r) => msgs[r], baseSha: 'base', buildSha: 'RM', since: 'since' };
 }
 
 test('same tree, base and message: same', async () => {
@@ -40,4 +40,10 @@ test('parity layout, same R message: same', async () => {
 });
 test('parity layout, different R message: not same', async () => {
   assert.strictEqual(await branchSame(parity(PENDING, MSG)), false);
+});
+test('older layout (F on R, no RM): not same, so the branch is rebuilt as RM + FT', async () => {
+  const o = parity(PENDING, PENDING);
+  const rev = o.rev;
+  o.rev = async (r) => (r === 'FETCH_HEAD^1^2^{tree}' ? 'fatal: bad revision' : rev(r));
+  assert.strictEqual(await branchSame(o), false);
 });
