@@ -1,6 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('../lib/report');
 
 const classified = [
@@ -132,4 +134,19 @@ test('nothing staged: the recovery path says the repo is done and the verify job
   assert.strictEqual(noCommitFailure('reconciled', 'main', true), 'Consistency drift: main already carries every repo change; the verify job records its build on the built repo.');
   assert.strictEqual(noCommitFailure('reconciled', 'main', false), 'Consistency drift produced no committable source change (reconciled).');
   assert.strictEqual(noCommitFailure('ignorable-only', 'main', false), 'Consistency drift produced no committable source change (ignorable-only).');
+});
+
+// An unrecoverable-only check opens no PR: its failure line is the only pointer, so it names the items.
+test('nothing staged, nothing recorded: the failure names what needs a decision', () => {
+  const unknown = (key) => ({ key, category: 'unknown', recoverable: false });
+  assert.strictEqual(noCommitFailure('unrecoverable-only', 'main', false, [unknown('notes.txt')]),
+    'Drift remains: 1 item(s) need a decision (notes.txt). See the job summary.');
+  assert.strictEqual(noCommitFailure('partial', 'main', false, [unknown('a.txt'), { key: 'akismet', category: 'deferred', recoverable: false }]),
+    "Drift remains: 1 item(s) need a decision (a.txt), 1 item(s) wait for the next run's PR or the next Deploy. See the job summary.");
+  assert.match(noCommitFailure('unrecoverable-only', 'main', false, ['1', '2', '3', '4', '5', '6', '7'].map(unknown)),
+    /7 item\(s\) need a decision \(1, 2, 3, 4, 5 and 2 more\)/);
+  assert.strictEqual(noCommitFailure('ignorable-only', 'main', false, [{ key: 'x', category: 'ignorable', recoverable: false }]),
+    'Consistency drift produced no committable source change (ignorable-only).');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.match(src, /endRun\(core, noCommitFailure\(outcome, ref, recovery, classified\), recovery\)/);
 });
