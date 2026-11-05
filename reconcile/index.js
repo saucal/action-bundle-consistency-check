@@ -283,10 +283,14 @@ async function closeStale(repo, branch, why) {
     await closeStale(repo, branch, `\`${ref}\` already carries every change it proposed${sha ? ` (${sha.slice(0, 7)})` : ''}.`);
     if (sha) {
       // The verify job builds the heal (zero-change dry run, its own pending paths ignored) and records it in the built repo.
+      // The record names the merge commit when {ref}'s tip is the heal's tree (nothing undeployed on top);
+      // otherwise the heal itself, the deployed tree. Its pending lines live on the heal either way.
+      const treeOf = async (rev) => (await sh('git', ['rev-parse', `${rev}^{tree}`], { cwd, silent: true })).out.trim();
+      const rec = (await treeOf(baseSha)) === (await treeOf(sha)) ? baseSha : sha;
       core.setOutput('head-sha', baseSha);
-      core.setOutput('build-sha', sha);
+      core.setOutput('build-sha', rec);
       core.setOutput('pending-paths', pendingOf((await sh('git', ['show', '-s', '--format=%B', sha], { cwd, silent: true })).out));
-      core.notice(`${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: recording it. No PR, nothing deployed.`);
+      core.notice(`${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: recording ${rec === sha ? 'it' : `its merge ${rec.slice(0, 7)}`}. No PR, nothing deployed.`);
     } else if (result.classified.some((c) => c.recoverable)) {
       core.notice(`${ref} already carries every repo change, in commits not deployed yet: the next Deploy ships them. No PR.`);
     }
