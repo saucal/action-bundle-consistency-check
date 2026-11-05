@@ -24,6 +24,7 @@ const tipNote = (ref, { commits, since, rm, logins }) => [
   `${logins.length ? `For ${logins.map((l) => `@${l}`).join(', ')}: these are your commits.` : '**No GitHub user was found for these commits: assign this PR by hand.**'} `
   + `The server's drift is healed on the last deployed commit (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `
   + `This PR merges your undeployed commits on top of that heal. **It is never merged automatically**: merging it runs a normal Deploy of \`${ref}\` that ships them.`, '',
-  `Until it merges, a Deploy of \`${ref}\` is refused (it would undo the heal). Push further work to \`${ref}\` as usual: it ships with this merge.`, '', ''].join('\n');
+  `Until it merges, a Deploy of \`${ref}\` is refused (it would undo the heal), and the self-heal makes no other heal. Push further work to \`${ref}\` as usual: it ships with this merge. `
+  + 'If the heal left items on the server for review (below), that Deploy is refused on them until they are committed or ignored.', '', ''].join('\n');
 
 module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote };
