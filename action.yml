@@ -270,7 +270,7 @@ runs:
         force: true
         final-status: failure
         commit-message: |
-          :rotating_light: @here Server drift on ${{ github.ref_name }} carries signals of compromised code: ${{ steps.reconcile.outputs.security-summary }}. Self-heal will NOT merge; review the reconciliation PR and the server as a possible incident.
+          :rotating_light: <!here> Server drift on ${{ github.ref_name }} carries signals of compromised code: ${{ steps.reconcile.outputs.security-summary }}. Self-heal will NOT merge; review the reconciliation PR and the server as a possible incident.
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
