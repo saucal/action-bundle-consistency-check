@@ -115,6 +115,8 @@ function serverCarries(projectDir, serverDir, entry) {
   try {
     // The ceiling keeps git from finding the repo serverDir sits in: inside one, paths outside the
     // cwd are skipped and the check passes having applied nothing.
+    // shortcut: an entry without depth is checked at -p1 (cweagans' default); a project-wide
+    // default-patch-depth isn't read, so such a patch is held (the safe side), not passed.
     execFileSync('git', ['apply', '--check', '-R', `-p${(entry && entry.depth) || 1}`, file], {
       cwd: serverDir, stdio: 'pipe', env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(serverDir)) },
     });
