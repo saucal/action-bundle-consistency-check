@@ -463,7 +463,7 @@ async function routeTipPr(repo, num, logins) {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
     const recovery = isRecovery(recording && !crit.length && !suspicious, classified); // suspicious: the verify job is skipped
-    endRun(core, noCommitFailure(outcome, ref, recovery), recovery);
+    endRun(core, noCommitFailure(outcome, ref, recovery, classified), recovery);
     return;
   }
 

@@ -98,11 +98,13 @@ function reportBody(classified, meta) {
   return L.join('\n');
 }
 
-/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). */
-function remaining(classified) {
+/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). `named` lists the former. */
+function remaining(classified, named = false) {
   const left = classified.filter((c) => !c.recoverable && c.category !== 'ignorable');
   const later = left.filter((c) => LATER.has(c.category)).length;
-  return [left.length - later && `${left.length - later} item(s) need a decision`, later && `${later} item(s) ${WAIT}`].filter(Boolean).join(', ');
+  const decide = left.filter((c) => !LATER.has(c.category)).map((c) => c.key);
+  const names = named && decide.length ? ` (${decide.slice(0, 5).join(', ')}${decide.length > 5 ? ` and ${decide.length - 5} more` : ''})` : '';
+  return [decide.length && `${decide.length} item(s) need a decision${names}`, later && `${later} item(s) ${WAIT}`].filter(Boolean).join(', ');
 }
 
 /** The held PR's auto-merge line: its reasons as a list, else where the body lists them. */
@@ -124,10 +126,12 @@ const healCommitLine = (gated) => (gated
   ? 'Brings the repo in line with the server; verified to reproduce it before merging.'
   : 'Brings the repo in line with the server. Merged by hand, so not verified beforehand: the Deploy this merge triggers records it only if its dry run changes nothing.');
 
-/** The failure when nothing was staged. Recovery path (head-sha set): the repo is done, only the built repo is behind. */
-const noCommitFailure = (outcome, ref, recording) => (recording
-  ? `Consistency drift: ${ref} already carries every repo change; the verify job records its build on the built repo.`
-  : `Consistency drift produced no committable source change (${outcome}).`);
+/** The failure when nothing was staged. Recovery path (head-sha set): the repo is done, only the built repo is behind. Else it names what is left. */
+const noCommitFailure = (outcome, ref, recording, classified = []) => {
+  if (recording) return `Consistency drift: ${ref} already carries every repo change; the verify job records its build on the built repo.`;
+  const open = remaining(classified, true);
+  return open ? `Drift remains: ${open}. See the job summary.` : `Consistency drift produced no committable source change (${outcome}).`;
+};
 
 /** A merged heal not yet recorded: claims the record only while nothing is left (`open` = remaining()); the verify job's record is refused until then. */
 const recordNotice = (ref, sha, rec, open) => `${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: `
