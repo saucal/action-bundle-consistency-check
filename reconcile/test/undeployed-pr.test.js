@@ -20,3 +20,11 @@ test('the note names the engineers, or says to assign by hand', () => {
   assert.match(tipNote('main', { ...o, logins: [] }), /assign this PR by hand/);
   assert.match(tipNote('main', { ...o, logins: [] }), /never merged automatically/);
 });
+
+// A merged engineers' PR leaves nothing for its branch to keep reachable: the next check deletes it,
+// but only while the branch adds nothing to {ref} (an unanswered compare never deletes).
+test('a merged engineers\' PR has its branch deleted once {ref} contains it', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.js'), 'utf8');
+  const rec = src.slice(src.indexOf('async function recoverTipPr'), src.indexOf('async function routeTipPr'));
+  assert.match(rec, /closed && closed\.merged[\s\S]{0,600}contains\(repo, at, ref\)\) === true[\s\S]{0,200}'DELETE', `repos\/\$\{repo\}\/git\/refs\/heads\/\$\{tipBranch\}`/);
+});
