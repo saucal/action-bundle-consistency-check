@@ -14,7 +14,8 @@ const { undeployed, recorded } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
 const { endRun, isRecovery } = require('./lib/outcome');
-const { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote } = require('./lib/undeployed-pr');
+const { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote } = require('./lib/undeployed-pr');
+const { isHealSubject, healOf, materializeTip, tipHead } = require('./lib/tip-head');
 
 function env(name, def = '') { return process.env[name] || def; }
 
@@ -82,7 +83,7 @@ async function lastBuild(treeRoot) {
  * its auto-merge verdict changed. Returns its number, '' when no PR is open, or false when the
  * update failed (the step is failed).
  */
-async function updatePr(repo, ref, branch, body, runUrl, title = `Reconcile server drift on ${ref} [commit only]`) {
+async function updatePr(repo, ref, branch, body, runUrl, title = `Reconcile server drift on ${ref} [commit only]`, traceOverride = '') {
   const existing = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0] // empty | {number, body}'], { silent: true });
   let open = null;
   try { open = existing.out.trim() ? JSON.parse(existing.out) : null; } catch { core.setFailed(`listing the open PR failed:\n${existing.out}`); return false; }
@@ -95,7 +96,7 @@ async function updatePr(repo, ref, branch, body, runUrl, title = `Reconcile serv
   const edited = await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${num}`, '-f', `title=${title}`, '-F', `body=@${bodyFile}`], { silent: true }); // the response is the whole PR as JSON
   if (edited.code !== 0) { core.setFailed(`update PR body failed:\n${edited.out}`); return false; }
   core.info(`Updated PR #${num}.`);
-  const trace = changeComment(readState(open.body), readState(body), runUrl);
+  const trace = traceOverride || changeComment(readState(open.body), readState(body), runUrl);
   if (trace && (await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${num}/comments`, '-f', `body=${trace}`], { silent: true })).code !== 0) {
     core.warning(`Could not comment on PR #${num} about what changed.`);
   }
@@ -122,31 +123,97 @@ async function closeStale(repo, branch, why) {
   if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`], quiet)).code === 0) core.info(`Deleted ${branch}.`);
 }
 
-/** The open undeployed-tip PR: { number, head, rm } (rm = the recorded heal, its head's 1st parent), or null. */
-async function openTipPr(repo, tipBranch) {
-  const quiet = { silent: true };
-  const r = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${tipBranch}&state=open`, '-q', '.[0] // empty | {number, head: .head.sha}'], quiet);
-  let pr = null;
-  try { pr = r.code === 0 && r.out.trim() ? JSON.parse(r.out) : null; } catch { pr = null; }
-  if (!pr) return null;
-  const rm = (await sh('gh', ['api', `repos/${repo}/commits/${pr.head}`, '-q', '.parents[0].sha'], quiet)).out.trim();
-  return { number: String(pr.number), head: pr.head, rm };
+/**
+ * Does {repo}'s commit b contain commit a (GitHub's compare)? null when the API can't say (an error, an
+ * unknown sha): callers then leave the PR and its branch alone.
+ */
+async function contains(repo, a, b) {
+  const r = await sh('gh', ['api', `repos/${repo}/compare/${a}...${b}`, '-q', '.status'], { silent: true });
+  const st = r.code === 0 ? r.out.trim() : '';
+  return /^(ahead|identical)$/.test(st) ? true : /^(behind|diverged)$/.test(st) ? false : null;
+}
+
+/** The heal a tip PR's head carries (see lib/tip-head): the head itself, or an FT head's 1st parent. */
+async function healOfHead(repo, head) {
+  const r = await sh('gh', ['api', `repos/${repo}/commits/${head}`, '-q', '[(.commit.message | split("\\n")[0]), (.parents[0].sha // "")] | @tsv'], { silent: true });
+  const [subject, parent0] = r.out.trim().split('\t');
+  return healOf(head, subject, parent0);
+}
+
+/** The undeployed-tip PRs from tipBranch in a state: [{ number, head, rm, body, merged }], newest first. */
+async function tipPrs(repo, tipBranch, state) {
+  const r = await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${tipBranch}&state=${state}&per_page=20`,
+    '-q', '[.[] | {number, head: .head.sha, body, merged: (.merged_at != null)}] | sort_by(-.number)'], { silent: true });
+  // A failed listing is not "no PR": it throws (the step fails), like updatePr, instead of healing as if none waited.
+  const prs = parseTipPrs(r, `${state} PRs from ${tipBranch}`);
+  for (const pr of prs) { pr.number = String(pr.number); pr.rm = await healOfHead(repo, pr.head); }
+  return prs;
 }
 
 /**
- * The undeployed-tip PR is needed while the built repo records its heal (RM). Once the record names
- * something else (a forced Deploy, a newer record), merging it would bring a stale heal back: close it.
+ * The undeployed-tip PR is needed while the built repo records a heal it carries. Once the record names
+ * something its head doesn't contain (a forced Deploy, a newer record), merging it would bring a stale
+ * heal back: close it. Also when none of its heals was ever recorded and the record is on {ref} (its
+ * verify failed, or the drift went away): the next heal is rebuilt from the record in a fresh PR.
  * Its branch is what keeps RM and R reachable, so it is deleted only then.
- * @returns the PR still waiting, or null
+ * @returns the PR still waiting ({ number, head, rm, body }), or null
  */
-async function settleTipPr(repo, tipBranch, record) {
-  const pr = await openTipPr(repo, tipBranch);
+async function settleTipPr(repo, ref, tipBranch, record) {
+  const [pr] = await tipPrs(repo, tipBranch, 'open');
   if (!pr) return null;
-  if (record && pr.rm && record !== pr.rm) {
-    await closeStale(repo, tipBranch, `the built repo no longer records its heal ${pr.rm.slice(0, 7)} (it records ${record.slice(0, 7)}), so merging this would bring back a stale heal.`);
+  const verdict = record ? tipPrVerdict(pr, record, { inHead: await contains(repo, record, pr.head), inRef: await contains(repo, record, ref) }) : 'keep';
+  if (verdict === 'stale') {
+    await closeStale(repo, tipBranch, `the built repo no longer records a heal this PR carries (it records ${record.slice(0, 7)}), so merging this would bring back a stale heal.`);
+    return null;
+  }
+  if (verdict === 'unrecorded') {
+    await closeStale(repo, tipBranch, `its heal ${pr.rm.slice(0, 7)} was never recorded as deployed (the built repo still records ${record.slice(0, 7)}), so the next heal starts again from there.`);
     return null;
   }
   return pr;
+}
+
+/**
+ * Owner decision (2026-11-04): an engineers' PR closed without merging must not leave the heal stuck.
+ * When the newest such PR still carries the record and {ref} doesn't contain it, open a fresh PR from
+ * the same branch (a closed PR is never reopened or repurposed), linking the closed one, routed and
+ * announced again. The branch is recreated at the closed head if it was deleted.
+ * @returns the fresh PR ({ number, head, rm, body, recovered }), or null
+ */
+async function recoverTipPr(repo, ref, tipBranch, record) {
+  if (!record) return null;
+  const closed = (await tipPrs(repo, tipBranch, 'closed'))[0];
+  if (!recoverable(closed, record, closed ? { inHead: await contains(repo, record, closed.head), inRef: await contains(repo, record, ref) } : {})) return null;
+  const quiet = { silent: true };
+  const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${tipBranch}`, '-q', '.object.sha'], quiet)).out.trim();
+  let head = closed.head;
+  const kept = /^[0-9a-f]{40}$/.test(at) ? await contains(repo, closed.head, at) : false;
+  if (kept === null) { core.warning(`Could not compare ${tipBranch} with closed PR #${closed.number}'s head; not recovering it this run.`); return null; }
+  if (kept) head = at;
+  else if (/^[0-9a-f]{40}$/.test(at)) { core.warning(`${tipBranch} moved off closed PR #${closed.number}'s head; not recovering it.`); return null; }
+  else if ((await sh('gh', ['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/heads/${tipBranch}`, '-f', `sha=${closed.head}`], quiet)).code !== 0) {
+    core.warning(`Could not recreate ${tipBranch} at closed PR #${closed.number}'s head; not recovering it.`); return null;
+  }
+  const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-recovered-${ref}.md`);
+  fs.writeFileSync(bodyFile, recoveredNote(ref, closed.number, record) + String(closed.body || ''));
+  const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', tipBranch, '--base', ref, '--title', tipTitle(ref), '--body-file', bodyFile], quiet);
+  const num = (created.out.match(/\/pull\/(\d+)/) || [])[1];
+  if (created.code !== 0 || !num) { core.warning(`Could not open a fresh PR for closed #${closed.number}:\n${created.out}`); return null; }
+  await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${closed.number}/comments`, '-f', `body=Closed without merging, but the built repo still records its heal ${record.slice(0, 7)}: the self-heal opened #${num} in its place (a closed PR is never reopened).`], quiet);
+  let logins = (await sh('gh', ['api', `repos/${repo}/issues/${closed.number}`, '-q', '.assignees[].login'], quiet)).out.split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9-]+$/.test(l));
+  // Nobody assigned on the closed PR: the undeployed commits' authors, as for a new PR (record...ref = U's commits since D).
+  if (!logins.length) {
+    logins = engineerLogins((await sh('gh', ['api', `repos/${repo}/compare/${record}...${ref}`, '-q', '.commits[] | (.author.login // empty), (.committer.login // empty)'], quiet)).out,
+      (await sh('gh', ['api', 'user', '-q', '.login'], quiet)).out.trim());
+  }
+  await routeTipPr(repo, num, logins);
+  core.warning(`Engineers' PR #${closed.number} was closed without merging while ${ref} still lacks the recorded heal ${record.slice(0, 7)}: opened #${num} in its place.`);
+  core.setOutput('undeployed-pr', num);
+  core.setOutput('undeployed-pr-recovered', closed.number);
+  core.setOutput('engineers', logins.map((l) => `@${l}`).join(', '));
+  // Its newest heal, which may be newer than the record (a heal that joined and was never verified): the
+  // drift path then refuses, as for an open PR in that state.
+  return { number: num, head, rm: await healOfHead(repo, head), body: fs.readFileSync(bodyFile, 'utf8'), recovered: closed.number };
 }
 
 /** Route the undeployed-tip PR to the engineers: label, assignees, review requests. Never fails the run. */
@@ -174,8 +241,10 @@ async function routeTipPr(repo, num, logins) {
   const tipBranch = tipBranchOf(ref);
   if (env('CLEANUP_ONLY')) {
     await closeStale(repo, branch, 'the consistency check is green — the server matches the deployed build, so this reconciliation is no longer needed.');
-    // Green is what an open undeployed-tip PR expects (the server runs its recorded heal): keep it unless stale.
-    await settleTipPr(repo, tipBranch, await lastBuild(treeRoot));
+    // Green is what an open undeployed-tip PR expects (the server runs its recorded heal): keep it unless
+    // stale. A closed one whose heal is still the record gets a fresh PR (and the loud alert again).
+    const record = await lastBuild(treeRoot);
+    if (!(await settleTipPr(repo, ref, tipBranch, record))) await recoverTipPr(repo, ref, tipBranch, record);
     return;
   }
   // Composer SatisPress auth is configured by the action step (composer config --global --auth)
@@ -209,17 +278,48 @@ async function routeTipPr(repo, num, logins) {
   // The base this branch was cut from — the convergence gate merges only while origin/{ref} is still here.
   const baseSha = (await sh('git', ['rev-parse', `origin/${ref}`], { cwd })).out.trim();
   core.setOutput('base-sha', baseSha);
-  // An undeployed-tip PR still waiting: the record is its heal RM, which {ref} doesn't carry yet, so a
-  // heal now would be built on {ref} without it. No second heal while it is open: say so on the PR.
-  const waiting = await settleTipPr(repo, tipBranch, await lastBuild(treeRoot));
-  if (waiting) {
-    const why = `New server drift on \`${ref}\` while PR #${waiting.number} waits: no new heal until it merges, as \`${ref}\` does not carry the recorded heal ${waiting.rm.slice(0, 7)} yet.`;
+  // An engineers' PR still waiting (or closed without merging, recovered as a fresh one): the record is
+  // its newest heal, which {ref} doesn't carry yet. New drift joins that PR in place (owner, 2026-11-04):
+  // the heal is built on the record and the heal on the tip on what merging the PR would make, so the
+  // PR keeps every heal; its head only gains commits. tipStart is where the heal on the tip starts.
+  const record = await lastBuild(treeRoot);
+  const waiting = (await settleTipPr(repo, ref, tipBranch, record)) || await recoverTipPr(repo, ref, tipBranch, record);
+  const refuse = async (why) => {
     await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${waiting.number}/comments`, '-f', `body=${why} From the [consistency check run](${runUrl}).`], { silent: true });
     core.setOutput('undeployed-pr', waiting.number);
     core.setFailed(`${why} Merge PR #${waiting.number}, then the next check heals the rest.`);
-    return;
+  };
+  let tipStart = `origin/${ref}`;
+  let inPlace = null;
+  if (waiting) {
+    if (waiting.rm !== record) {
+      await refuse(`New server drift on \`${ref}\` while PR #${waiting.number} waits: its newest heal ${waiting.rm.slice(0, 7)} is not recorded as deployed yet (the built repo records ${record.slice(0, 7)}), so no heal joins it.`);
+      return;
+    }
+    const got = await sh('git', ['fetch', 'origin', `+refs/heads/${tipBranch}:refs/remotes/origin/${tipBranch}`], { cwd });
+    const at = got.code === 0 ? (await sh('git', ['rev-parse', `origin/${tipBranch}`], { cwd, silent: true })).out.trim() : '';
+    const git = (...args) => sh('git', args, { cwd, silent: true });
+    // The record is a heal (RM, RM2...) newer than the deployed commit D it stands on: deepen a shallow
+    // {ref} back to D (undeployed() deepens to the record's date only), so the merge below and the
+    // undeployed commits see their merge base.
+    let d = record;
+    for (let i = 0; i < 50 && isHealSubject((await git('log', '-1', '--format=%s', d)).out); i++) d = (await git('rev-parse', `${d}^1`)).out.trim();
+    const when = Number((await git('show', '-s', '--format=%ct', d)).out.trim());
+    if (when && (await git('rev-parse', '--is-shallow-repository')).out.trim() === 'true') await git('fetch', '-q', '--no-tags', `--shallow-since=${when - 86400}`, 'origin', ref);
+    const t = at === waiting.head ? await materializeTip(git, baseSha, at, `Merge PR #${waiting.number} into ${ref} (local only: what merging it makes)`) : null;
+    if (!t) {
+      await refuse(`New server drift on \`${ref}\` while PR #${waiting.number} waits: \`${ref}\` and the PR no longer merge cleanly${at === waiting.head ? '' : ' (or its branch moved)'}, so the drift can't join it. Resolve the PR's conflicts with \`${ref}\`.`);
+      return;
+    }
+    await must(['checkout', '-q', '-B', branch, t], cwd);
+    tipStart = t;
+    inPlace = waiting;
+    core.info(`New drift joins PR #${waiting.number} in place: the heal is built on the recorded heal ${record.slice(0, 7)}, the heal on the tip on ${t.slice(0, 7)} (${ref} merged with the PR).`);
   }
-  const pending = await undeployed(await lastBuild(treeRoot), cwd, baseSha, ref, core.warning);
+  // In place, the tip is what merging the PR makes: it contains the record, so the undeployed commits
+  // are counted from the record's merge base with {ref}.
+  const pending = await undeployed(record, cwd, inPlace ? tipStart : baseSha, ref, core.warning);
+  if (inPlace && !pending) { await refuse(`New server drift on \`${ref}\` while PR #${inPlace.number} waits, but its undeployed commits could not be read, so the drift can't join it.`); return; }
 
   // What the repo commits itself: those paths are healed by copying the server's version, never
   // looked up in a registry. A directory counts if it holds tracked files.
@@ -262,7 +362,7 @@ async function routeTipPr(repo, num, logins) {
       const split = await splitHeal(result, { runOnce, log: core.info,
         stage: (r) => stageOutputs(cwd, r, isTracked, (args) => sh('git', args, { cwd })),
         undo: async (r) => {
-          await must(['reset', '-q', '--hard', `origin/${ref}`], cwd);
+          await must(['reset', '-q', '--hard', tipStart], cwd);
           // -x within these paths only: adopted dirs are usually gitignored (plugins/).
           await must(['clean', '-fdqx', '--', 'patches', 'patches.lock.json', ...(r.trackedPaths || []), ...(r.adoptedPaths || [])], cwd);
         } });
@@ -330,6 +430,7 @@ async function routeTipPr(repo, num, logins) {
     core.setFailed(`The heal on the deployed commit lost ${lost.map((c) => c.key).join(', ')}: see the job summary. Nothing pushed.`);
     return;
   }
+  if (inPlace && merged) { await refuse(`New server drift on \`${ref}\` while PR #${inPlace.number} waits: what merging the PR makes already carries the repo change, so nothing joins it.`); return; }
   if (merged) {
     const { sha } = merged;
     await core.summary.addRaw(reportBody(result.classified, { ref, runUrl, already: sha || true })).write();
@@ -387,6 +488,13 @@ async function routeTipPr(repo, num, logins) {
   // Undeployed commits and a heal that needs no review: the heal is recorded on its own and the
   // undeployed tip goes to its engineers in a PR (tipNote, below). Held, one PR carries both, as before.
   const toEngineers = !!(tipResult && autoMergeOn && autoMerge && autoMerge.ok);
+  // One PR per ref: drift that needs review can't join the engineers' PR (merging it deploys), and no
+  // second PR opens while it waits. The mixed heal's eligible part joins; the rest waits for its merge.
+  if (inPlace && (!toEngineers || !staged.length)) {
+    await core.summary.addRaw(body).write();
+    await refuse(`New server drift on \`${ref}\` while PR #${inPlace.number} waits ${staged.length ? 'needs a review' : 'leaves nothing to commit'}, so it can't join that PR (see the run's summary).`);
+    return;
+  }
   const prBranch = toEngineers ? tipBranch : branch;
   const logins = toEngineers ? engineerLogins((await sh('gh', ['api', `repos/${repo}/compare/${pending.since}...${baseSha}`, '-q', '.commits[] | (.author.login // empty), (.committer.login // empty)'], { silent: true })).out,
     (await sh('gh', ['api', 'user', '-q', '.login'], { silent: true })).out.trim()) : [];
@@ -431,8 +539,13 @@ async function routeTipPr(repo, num, logins) {
         ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
         : heldNote(reasonLines)) + body;
   // Read back by the next run that rewrites the PR (pr-trace).
-  body += stateMarker(prState(classified, { auto: autoMergeOn && !!(autoMerge && autoMerge.ok),
-    reasons: autoMergeOn ? (autoMerge && autoMerge.reasons) || [] : ['auto-merge is off for this repo'] }));
+  const state = prState(classified, { auto: autoMergeOn && !!(autoMerge && autoMerge.ok),
+    reasons: autoMergeOn ? (autoMerge && autoMerge.reasons) || [] : ['auto-merge is off for this repo'] });
+  // Joined in place: the PR still carries the earlier heals' items (the body below shows this heal's).
+  const earlier = inPlace ? ((readState(inPlace.body) || {}).items || []).filter((k) => !state.items.includes(k)) : [];
+  if (earlier.length) body += `\n**Earlier heals in this PR (already recorded):** ${earlier.map((k) => `\`${k}\``).join(', ')}.\n`;
+  state.items = [...new Set([...state.items, ...earlier])].sort();
+  body += stateMarker(state);
 
   if (outcome === 'noop') {
     await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
@@ -482,6 +595,7 @@ async function routeTipPr(repo, num, logins) {
   if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
   let headSha = (await sh('git', ['rev-parse', 'HEAD'], { cwd })).out.trim();
   let buildSha = '';
+  let layout = '';
   if (tipResult) {
     // The owner's graph (2026-10-20). R (this commit) = the deployed commit D + the server's drift.
     // RM = merge(D, R), "reconciled on top of the old tip": R's tree, what the server runs and what
@@ -495,30 +609,42 @@ async function routeTipPr(repo, num, logins) {
         ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
     if (rm.code !== 0) { core.setFailed(`git commit-tree failed:\n${rm.out}`); return; }
     buildSha = rm.out.trim();
+    // The head (lib/tip-head): RM itself when git merges it with U into exactly the heal on the tip, so
+    // the merge button writes the final tip merge(U, RM); else FT, a resolving merge with run A's tree.
+    // In place, the open PR's head stays an ancestor (it only gains commits).
     // To the engineers: merging it is a normal Deploy (no [skip deploy]). Held: the reconciliation PR,
     // merged by hand [commit only] as before, so its undeployed commits wait for the next Deploy.
-    const merge = await sh('git', ['commit-tree', tipTree, '-p', buildSha, '-p', baseSha, '-m', toEngineers
-      ? [`Merge ${ref}'s ${pending.commits} undeployed commit(s) on top of the self-heal`, '',
-        `The heal ${buildSha.slice(0, 7)} is what the server runs; merging this deploys these commits on top of it.`].join('\n')
-      : [`Apply the ${pending.commits} commit(s) not deployed yet after parity [skip deploy]`, '',
-        `Parity with the server is ${buildSha.slice(0, 7)}; these changes are still not deployed — the next Deploy of ${ref} ships them.`].join('\n')], { cwd });
-    if (merge.code !== 0) { core.setFailed(`git commit-tree failed:\n${merge.out}`); return; }
-    headSha = merge.out.trim();
+    let tip;
+    try {
+      tip = await tipHead({ git: (...args) => sh('git', args, { cwd, silent: true }), base: baseSha, rm: buildSha, tipTree, prev: inPlace ? inPlace.head : '',
+        message: toEngineers
+          ? [`Merge ${ref}'s ${pending.commits} undeployed commit(s) on top of the self-heal`, '',
+            `The heal ${buildSha.slice(0, 7)} is what the server runs; git can't merge it with ${ref} into the heal on ${ref} by itself, so this merge does: merging this PR deploys these commits on top of the heal.`].join('\n')
+          : [`Apply the ${pending.commits} commit(s) not deployed yet after parity [skip deploy]`, '',
+            `Parity with the server is ${buildSha.slice(0, 7)}; these changes are still not deployed — the next Deploy of ${ref} ships them.`].join('\n') });
+    } catch (e) { core.setFailed(String(e.message || e)); return; }
+    headSha = tip.head;
+    layout = tip.layout;
+    core.info(`PR head: ${layout === 'RM' ? `the heal ${buildSha.slice(0, 7)} itself (it merges cleanly with ${ref})` : `${headSha.slice(0, 7)}, a merge resolving the heal ${buildSha.slice(0, 7)} with ${ref}`}.`);
     await sh('git', ['checkout', '-q', '-B', prBranch, headSha], { cwd });
-    if (toEngineers) body = tipNote(ref, { commits: pending.commits, since: pending.since, rm: buildSha, logins }) + body;
+    if (toEngineers) body = tipNote(ref, { commits: pending.commits, since: pending.since, rm: buildSha, logins, joined: !!inPlace }) + body;
+    // A PR that replaced a closed one keeps saying so when a join rewrites its body.
+    if (toEngineers && inPlace) body = keptReplacesNote(inPlace.body) + body;
   }
-  // Skip the force-push when the open branch already holds this exact result on this exact base:
+  // Skip the push when the open branch already holds this exact result on this exact base:
   // a new commit every run would dismiss any review on the PR (stale-review ruleset).
   const remote = await sh('git', ['fetch', 'origin', prBranch], { cwd });
   const rev = async (r) => (await sh('git', ['rev-parse', r], { cwd, silent: true })).out.trim();
   const msg = async (r) => (await sh('git', ['log', '-1', '--format=%B', r], { cwd, silent: true })).out;
-  const same = remote.code === 0 && await branchSame({ rev, msg, baseSha, buildSha, since: buildSha && pending.since });
+  const same = remote.code === 0 && await branchSame({ rev, msg, baseSha, buildSha, since: buildSha && pending.since, layout });
   if (same) {
     headSha = await rev('FETCH_HEAD');
-    if (buildSha) buildSha = await rev('FETCH_HEAD^1');
+    if (buildSha) buildSha = isHealSubject(await msg('FETCH_HEAD')) ? headSha : await rev('FETCH_HEAD^1');
     core.info(`${prBranch} already holds this reconciliation on ${baseSha.slice(0, 7)}; not pushing.`);
   } else {
-    const push = await sh('git', ['push', '--force', 'origin', prBranch], { cwd });
+    // The engineers' PR, joined in place, only moves forward: never a force push. A fresh branch may
+    // replace a leftover one (no open PR follows it).
+    const push = await sh('git', ['push', ...(inPlace ? [] : ['--force']), 'origin', prBranch], { cwd });
     if (push.code !== 0) { core.setFailed(`git push failed:\n${push.out}`); return; }
   }
   core.setOutput('head-sha', headSha);
@@ -528,7 +654,8 @@ async function routeTipPr(repo, num, logins) {
   // The undeployed-tip PR supersedes an open reconciliation PR (one PR per ref).
   if (toEngineers) await closeStale(repo, branch, `superseded by the PR from \`${tipBranch}\`: the heal is recorded on its own and the undeployed commits go to their engineers.`);
   const prTitle = toEngineers ? tipTitle(ref) : `Reconcile server drift on ${ref} [commit only]`;
-  const updated = await updatePr(repo, ref, prBranch, body, runUrl, prTitle);
+  const updated = await updatePr(repo, ref, prBranch, body, runUrl, prTitle,
+    inPlace && joinedComment(readState(inPlace.body), readState(body), { prior: inPlace.rm, rm: buildSha, from: inPlace.head, to: headSha, runUrl }));
   if (updated === false) return;
   let prNum = updated;
   if (!updated) {

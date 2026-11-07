@@ -47,3 +47,10 @@ test('older layout (F on R, no RM): not same, so the branch is rebuilt as RM + F
   o.rev = async (r) => (r === 'FETCH_HEAD^1^2^{tree}' ? 'fatal: bad revision' : rev(r));
   assert.strictEqual(await branchSame(o), false);
 });
+test('RM layout (the head is the heal itself): same heal = same, whatever the tip', async () => {
+  const revs = { 'FETCH_HEAD^{tree}': 'tR', 'HEAD^{tree}': 'tR', 'RM^{tree}': 'tR', 'FETCH_HEAD^1': 'since', 'FETCH_HEAD^2^{tree}': 'tR' };
+  const o = (fetchMsg) => ({ rev: async (r) => (r in revs ? revs[r] : `fatal: ${r}`), msg: async (r) => ({ FETCH_HEAD: fetchMsg, RM: PENDING })[r],
+    baseSha: 'moved-tip', buildSha: 'RM', since: 'since', layout: 'RM' });
+  assert.strictEqual(await branchSame(o(PENDING)), true);
+  assert.strictEqual(await branchSame(o(MSG)), false);
+});

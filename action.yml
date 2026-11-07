@@ -134,11 +134,14 @@ outputs:
     description: "Newline-separated anchored paths the self-heal checks must not count this time (deferred, flagged or junk drift)."
     value: ${{ steps.reconcile.outputs.pending-paths }}
   reconcile-undeployed-pr:
-    description: "With commits not deployed yet and a heal that needs no review: the PR merging them on top of the heal (never auto-merged; merging it deploys). Also set when new drift was refused because that PR still waits."
-    value: ${{ steps.reconcile.outputs.undeployed-pr }}
+    description: "With commits not deployed yet and a heal that needs no review: the PR merging them on top of the heal (never auto-merged; merging it deploys). Also set when new drift joined it in place, was refused because it still waits, or when it was opened afresh for one closed without merging."
+    value: ${{ steps.reconcile.outputs.undeployed-pr || steps.cleanup.outputs.undeployed-pr }}
+  reconcile-undeployed-pr-recovered:
+    description: "The engineers' PR that was closed without merging while the built repo still records its heal; reconcile-undeployed-pr is the fresh PR opened in its place."
+    value: ${{ steps.reconcile.outputs.undeployed-pr-recovered || steps.cleanup.outputs.undeployed-pr-recovered }}
   reconcile-engineers:
     description: "The GitHub users ('@a, @b') the undeployed-tip PR is assigned to; empty when none was found."
-    value: ${{ steps.reconcile.outputs.engineers }}
+    value: ${{ steps.reconcile.outputs.engineers || steps.cleanup.outputs.engineers }}
   reconcile-suspicious:
     description: "'true' when server-derived content carries signals of compromised code — never merge, alert a human."
     value: ${{ steps.reconcile.outputs.suspicious }}
@@ -195,13 +198,16 @@ runs:
         path: ${{ steps.pre-build-consistency-check.outputs.diffPath }}
 
     # Fixed some other way (a deploy, a manual sync): an open reconciliation PR is stale.
+    # An engineers' PR closed without merging while its heal is still the record gets a fresh PR here.
     - name: Close a stale reconciliation PR
+      id: cleanup
       if: ${{ success() && steps.pre-build-consistency-check.outcome == 'success' && inputs.reconcile == '1' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         REF: ${{ github.ref_name }}
+        BUILT_DIR: ${{ inputs.built }}
         CLEANUP_ONLY: '1'
       run: node "$GITHUB_ACTION_PATH/reconcile/index.js"
 
@@ -270,7 +276,7 @@ runs:
         force: true
         final-status: failure
         commit-message: |
-          :rotating_light: @here Server drift on ${{ github.ref_name }} carries signals of compromised code: ${{ steps.reconcile.outputs.security-summary }}. Self-heal will NOT merge; review the reconciliation PR and the server as a possible incident.
+          :rotating_light: <!here> Server drift on ${{ github.ref_name }} carries signals of compromised code: ${{ steps.reconcile.outputs.security-summary }}. Self-heal will NOT merge; review the reconciliation PR and the server as a possible incident.
 
     - name: Signal Failure to slack
       if: ${{ failure() }}
