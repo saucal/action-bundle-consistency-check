@@ -54,6 +54,8 @@ test('action.yml: a failed check stays red unless reconcile reports recovery', (
   const steps = yml.split(/\n    - name: /).slice(1).map((b) => ({ name: b.split('\n')[0], if: (/\n      if: (.*)/.exec(b) || [])[1] || '', body: b }));
   const step = (n) => steps.find((s) => s.name === n);
   assert.match(step('Pre-build Consistency check').body, /\n      continue-on-error: true\n/);
+  // Its failure is reported by "Fail on drift" / reconcile: its own drift annotations are warnings, so a green recovery shows no red.
+  assert.match(step('Pre-build Consistency check').body, /\n        drift-annotation: warning\n/);
   const fail = steps.findIndex((s) => s.name === 'Fail on drift');
   assert.strictEqual(steps[fail].if, "${{ success() && steps.pre-build-consistency-check.outcome == 'failure' && steps.reconcile.outputs.recovery != 'true' }}");
   assert.match(steps[fail].body, /\n        exit 1\n/);
