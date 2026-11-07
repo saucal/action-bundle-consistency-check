@@ -17,10 +17,11 @@ const { makeRunner } = require('../../lib/runner');
  * @param {Array<{slug:string,pkg:string,version:string,body?:string}>} [o.themes]
  *   Same shape as plugins, but produces type:wordpress-theme path repos with a
  *   style.css header (routed to themes/{$name}/ via installer-paths).
- * @param {Array<{pkg:string,slug:string,root:string,patchText:string}>} [o.patches]
- *   Pre-existing applied patches. Each writes patches/<slug>.patch, registers an
- *   extra.patches entry, and (after install) runs patches-relock + patches-repatch
- *   so the BUILT state already carries the applied patch.
+ * @param {Array<{pkg:string,slug:string,root:string,patchText:string,file?:string}>} [o.patches]
+ *   Pre-existing applied patches. Each writes patches/<file || slug>.patch (patches/<slug>.patch is
+ *   the heal's own name; any other is a developer's), registers an extra.patches entry (in order,
+ *   several per package allowed), and (after install) runs patches-relock + patches-repatch so the
+ *   BUILT state already carries the applied patches.
  * @returns {{dir:string, runner:object}}
  */
 function makeProject(o) {
@@ -125,17 +126,13 @@ function makeProject(o) {
     fs.mkdirSync(patchesDir, { recursive: true });
     composer.extra.patches = composer.extra.patches || {};
     for (const pp of prePatches) {
-      fs.writeFileSync(
-        path.join(patchesDir, `${pp.slug}.patch`),
-        pp.patchText
-      );
-      composer.extra.patches[pp.pkg] = [
-        {
-          description: `Pre-existing patch for ${pp.slug}`,
-          url: `./patches/${pp.slug}.patch`,
-          depth: 2,
-        },
-      ];
+      const file = pp.file || pp.slug;
+      fs.writeFileSync(path.join(patchesDir, `${file}.patch`), pp.patchText);
+      (composer.extra.patches[pp.pkg] = composer.extra.patches[pp.pkg] || []).push({
+        description: `Pre-existing patch for ${pp.slug}`,
+        url: `./patches/${file}.patch`,
+        depth: 2,
+      });
     }
   }
 
