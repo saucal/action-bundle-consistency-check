@@ -435,7 +435,7 @@ async function routeTipPr(repo, num, logins) {
     const { sha } = merged;
     await core.summary.addRaw(reportBody(result.classified, { ref, runUrl, already: sha || true })).write();
     await closeStale(repo, branch, `\`${ref}\` already carries every change it proposed${sha ? ` (${sha.slice(0, 7)})` : ''}.`);
-    const open = remaining(result.classified);
+    const open = remaining(result.classified, true);
     if (sha) {
       // The verify job builds the heal (zero-change dry run, its own pending paths ignored) and records it in the built repo.
       // The record names the merge commit when {ref}'s tip is the heal's tree (nothing undeployed on top);
