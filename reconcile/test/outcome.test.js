@@ -102,7 +102,8 @@ test('action.yml: "Fail on drift" names the reconciliation PR when there is one'
 });
 
 // A merged-but-unrecorded heal with an item still needing a decision: the record is refused until it
-// is settled, so the notice must not claim it is being recorded. index.js counts what remains first.
+// is settled, so the notice must not claim it is being recorded. index.js counts what remains first,
+// named: the run's failure line is the only pointer (no PR), so it names the items, as the no-PR path does.
 test('merged heal not recorded: the notice claims the record only when nothing is left', () => {
   const { recordNotice } = require('../lib/report');
   const S = 'a'.repeat(40), M = 'b'.repeat(40);
@@ -113,5 +114,5 @@ test('merged heal not recorded: the notice claims the record only when nothing i
   assert.match(waiting, /the record \(bbbbbbb\) waits until the item\(s\) left in the job summary are settled\. No PR, nothing deployed\.$/);
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
   const at = src.indexOf('core.notice(recordNotice(ref, sha, rec, open));');
-  assert.ok(at > 0 && src.lastIndexOf('const open = remaining(result.classified);', at) > src.indexOf('if (merged) {'));
+  assert.ok(at > 0 && src.lastIndexOf('const open = remaining(result.classified, true);', at) > src.indexOf('if (merged) {'));
 });
