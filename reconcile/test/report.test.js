@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('../lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, remainsFailure } = require('../lib/report');
 
 const classified = [
   { key: 'code-snippets', category: 'wpackagist-plugin', recoverable: true, composerPackage: 'wpackagist-plugin/code-snippets', remediation: 'Added wpackagist-plugin/code-snippets:>=3.6.5' },
@@ -88,6 +88,11 @@ test('deferred and superseded drift is not counted as needing a decision', () =>
   assert.strictEqual(remaining(later), "2 item(s) wait for the next run's PR or the next Deploy");
   assert.strictEqual(remaining([...later, ...classified]), "2 item(s) need a decision, 2 item(s) wait for the next run's PR or the next Deploy");
   assert.strictEqual(remaining(classified.slice(0, 1)), '');
+  // Named (a failure line): the items that wait are listed too, so the line says what was left out.
+  assert.strictEqual(remaining(later, true), "2 item(s) wait for the next run's PR or the next Deploy (query-monitor, akismet)");
+  assert.strictEqual(remainsFailure(remaining(later, true), '7', 'https://github.test/o/r/pull/7'),
+    "Reconciliation ran, but drift remains: 2 item(s) wait for the next run's PR or the next Deploy (query-monitor, akismet); see PR #7: https://github.test/o/r/pull/7");
+  assert.strictEqual(remainsFailure('1 item(s) need a decision (a.txt)', '', ''), 'Reconciliation ran, but drift remains: 1 item(s) need a decision (a.txt) — see the job summary.');
 });
 
 test('a deferred item says why run 1 held it', () => {
@@ -142,7 +147,7 @@ test('nothing staged, nothing recorded: the failure names what needs a decision'
   assert.strictEqual(noCommitFailure('unrecoverable-only', 'main', false, [unknown('notes.txt')]),
     'Drift remains: 1 item(s) need a decision (notes.txt). See the job summary.');
   assert.strictEqual(noCommitFailure('partial', 'main', false, [unknown('a.txt'), { key: 'akismet', category: 'deferred', recoverable: false }]),
-    "Drift remains: 1 item(s) need a decision (a.txt), 1 item(s) wait for the next run's PR or the next Deploy. See the job summary.");
+    "Drift remains: 1 item(s) need a decision (a.txt), 1 item(s) wait for the next run's PR or the next Deploy (akismet). See the job summary.");
   assert.match(noCommitFailure('unrecoverable-only', 'main', false, ['1', '2', '3', '4', '5', '6', '7'].map(unknown)),
     /7 item\(s\) need a decision \(1, 2, 3, 4, 5 and 2 more\)/);
   assert.strictEqual(noCommitFailure('ignorable-only', 'main', false, [{ key: 'x', category: 'ignorable', recoverable: false }]),
