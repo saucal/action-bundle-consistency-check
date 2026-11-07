@@ -142,8 +142,14 @@ test('decision 2: a closed engineers\' PR is recovered while its head carries th
   assert.strictEqual(recoverable(null, 'rm2', { inHead: true, inRef: false }), false);
   assert.strictEqual(recoverable(closed, 'rm2', { inHead: null, inRef: false }), false); // the API could not answer
   assert.strictEqual(recoverable(closed, 'rm2', { inHead: true, inRef: null }), false);
-  const note = recoveredNote('main', '7', 'a'.repeat(40));
+  const note = recoveredNote('main', '7', 'a'.repeat(40), 'https://example.test/run/2');
   assert.match(note, /Replaces #7, closed without merging/);
+  // the replacement and the comment on the closed PR link the run that opened it, not the closed PR's run
+  assert.match(note, /Opened by the \[consistency check run\]\(https:\/\/example\.test\/run\/2\)\./);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.match(src, /recoveredNote\(ref, closed\.number, record, runUrl\)/);
+  assert.match(src, /opened #\$\{num\} in its place \(a closed PR is never reopened\)\. From the \[consistency check run\]\(\$\{runUrl\}\)\./);
+  assert.strictEqual((src.match(/await recoverTipPr\(repo, ref, tipBranch, record, runUrl\)/g) || []).length, 2);
   assert.match(note, /never reopened/);
   // kept when a join rewrites the body
   assert.strictEqual(keptReplacesNote(`${note}## ⚠️ 1 commit(s) ...`), note);

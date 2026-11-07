@@ -180,7 +180,7 @@ async function settleTipPr(repo, ref, tipBranch, record) {
  * announced again. The branch is recreated at the closed head if it was deleted.
  * @returns the fresh PR ({ number, head, rm, body, recovered }), or null
  */
-async function recoverTipPr(repo, ref, tipBranch, record) {
+async function recoverTipPr(repo, ref, tipBranch, record, runUrl) {
   if (!record) return null;
   const closed = (await tipPrs(repo, tipBranch, 'closed'))[0];
   if (closed && closed.merged) {
@@ -202,11 +202,11 @@ async function recoverTipPr(repo, ref, tipBranch, record) {
     core.warning(`Could not recreate ${tipBranch} at closed PR #${closed.number}'s head; not recovering it.`); return null;
   }
   const bodyFile = path.join(process.env.RUNNER_TEMP || '/tmp', `reconcile-recovered-${ref}.md`);
-  fs.writeFileSync(bodyFile, recoveredNote(ref, closed.number, record) + String(closed.body || ''));
+  fs.writeFileSync(bodyFile, recoveredNote(ref, closed.number, record, runUrl) + String(closed.body || ''));
   const created = await sh('gh', ['pr', 'create', '-R', repo, '--head', tipBranch, '--base', ref, '--title', tipTitle(ref), '--body-file', bodyFile], quiet);
   const num = (created.out.match(/\/pull\/(\d+)/) || [])[1];
   if (created.code !== 0 || !num) { core.warning(`Could not open a fresh PR for closed #${closed.number}:\n${created.out}`); return null; }
-  await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${closed.number}/comments`, '-f', `body=Closed without merging, but the built repo still records its heal ${record.slice(0, 7)}: the self-heal opened #${num} in its place (a closed PR is never reopened).`], quiet);
+  await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${closed.number}/comments`, '-f', `body=Closed without merging, but the built repo still records its heal ${record.slice(0, 7)}: the self-heal opened #${num} in its place (a closed PR is never reopened). From the [consistency check run](${runUrl}).`], quiet);
   let logins = (await sh('gh', ['api', `repos/${repo}/issues/${closed.number}`, '-q', '.assignees[].login'], quiet)).out.split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9-]+$/.test(l));
   // Nobody assigned on the closed PR: the undeployed commits' authors, as for a new PR (record...ref = U's commits since D).
   if (!logins.length) {
@@ -251,7 +251,7 @@ async function routeTipPr(repo, num, logins) {
     // Green is what an open undeployed-tip PR expects (the server runs its recorded heal): keep it unless
     // stale. A closed one whose heal is still the record gets a fresh PR (and the loud alert again).
     const record = await lastBuild(treeRoot);
-    if (!(await settleTipPr(repo, ref, tipBranch, record))) await recoverTipPr(repo, ref, tipBranch, record);
+    if (!(await settleTipPr(repo, ref, tipBranch, record))) await recoverTipPr(repo, ref, tipBranch, record, runUrl);
     return;
   }
   // Composer SatisPress auth is configured by the action step (composer config --global --auth)
@@ -290,7 +290,7 @@ async function routeTipPr(repo, num, logins) {
   // the heal is built on the record and the heal on the tip on what merging the PR would make, so the
   // PR keeps every heal; its head only gains commits. tipStart is where the heal on the tip starts.
   const record = await lastBuild(treeRoot);
-  const waiting = (await settleTipPr(repo, ref, tipBranch, record)) || await recoverTipPr(repo, ref, tipBranch, record);
+  const waiting = (await settleTipPr(repo, ref, tipBranch, record)) || await recoverTipPr(repo, ref, tipBranch, record, runUrl);
   const refuse = async (why) => {
     await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${waiting.number}/comments`, '-f', `body=${why} From the [consistency check run](${runUrl}).`], { silent: true });
     core.setOutput('undeployed-pr', waiting.number);
