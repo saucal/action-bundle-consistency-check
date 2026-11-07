@@ -43,11 +43,11 @@ const joinedComment = (old, now, { prior, rm, from, to, runUrl }) => {
 };
 
 /** The opening of the fresh PR that replaces an engineers' PR closed without merging. */
-const recoveredNote = (ref, closed, record) => [
+const recoveredNote = (ref, closed, record, runUrl) => [
   `## ⚠️ Replaces #${closed}, closed without merging`, '',
   `#${closed} was closed, but the built repo still records its heal \`${record.slice(0, 7)}\` as deployed, and \`${ref}\` does not contain it: `
   + `until this merges, a Deploy of \`${ref}\` is refused. A closed PR is never reopened, so the self-heal opened this one from the same branch. `
-  + `If the heal must go instead, a forced Deploy (disable-consistency-check) is the deliberate rollback; this PR then closes on the next check.`, '', ''].join('\n');
+  + `If the heal must go instead, a forced Deploy (disable-consistency-check) is the deliberate rollback; this PR then closes on the next check. Opened by the [consistency check run](${runUrl}).`, '', ''].join('\n');
 
 /**
  * What to do with the open engineers' PR given the record (the built repo's last build source):
