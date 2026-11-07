@@ -4,7 +4,7 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, recordNotice } = require('./lib/report');
 const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
@@ -334,6 +334,7 @@ async function routeTipPr(repo, num, logins) {
     const { sha } = merged;
     await core.summary.addRaw(reportBody(result.classified, { ref, runUrl, already: sha || true })).write();
     await closeStale(repo, branch, `\`${ref}\` already carries every change it proposed${sha ? ` (${sha.slice(0, 7)})` : ''}.`);
+    const open = remaining(result.classified);
     if (sha) {
       // The verify job builds the heal (zero-change dry run, its own pending paths ignored) and records it in the built repo.
       // The record names the merge commit when {ref}'s tip is the heal's tree (nothing undeployed on top);
@@ -343,11 +344,10 @@ async function routeTipPr(repo, num, logins) {
       core.setOutput('head-sha', baseSha);
       core.setOutput('build-sha', rec);
       core.setOutput('pending-paths', pendingOf((await sh('git', ['show', '-s', '--format=%B', sha], { cwd, silent: true })).out));
-      core.notice(`${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: recording ${rec === sha ? 'it' : `its merge ${rec.slice(0, 7)}`}. No PR, nothing deployed.`);
+      core.notice(recordNotice(ref, sha, rec, open));
     } else if (result.classified.some((c) => c.recoverable)) {
       core.notice(`${ref} already carries every repo change, in commits not deployed yet: the next Deploy ships them. No PR.`);
     }
-    const open = remaining(result.classified);
     if (open) core.setFailed(`Drift remains: ${open}. See the job summary.`);
     else if (sha) endRun(core, noCommitFailure('reconciled', ref, true), true);
     return;

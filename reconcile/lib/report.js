@@ -133,4 +133,9 @@ const noCommitFailure = (outcome, ref, recording, classified = []) => {
   return open ? `Drift remains: ${open}. See the job summary.` : `Consistency drift produced no committable source change (${outcome}).`;
 };
 
-module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining };
+/** A merged heal not yet recorded: claims the record only while nothing is left (`open` = remaining()); the verify job's record is refused until then. */
+const recordNotice = (ref, sha, rec, open) => `${ref} already has the server's state in ${sha.slice(0, 7)}, merged but not recorded in the built repo: `
+  + (open ? `the record (${rec.slice(0, 7)}) waits until the item(s) left in the job summary are settled` : `recording ${rec === sha ? 'it' : `its merge ${rec.slice(0, 7)}`}`)
+  + '. No PR, nothing deployed.';
+
+module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, recordNotice };
