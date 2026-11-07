@@ -155,7 +155,7 @@ async function tipPrs(repo, tipBranch, state) {
  * something its head doesn't contain (a forced Deploy, a newer record), merging it would bring a stale
  * heal back: close it. Also when none of its heals was ever recorded and the record is on {ref} (its
  * verify failed, or the drift went away): the next heal is rebuilt from the record in a fresh PR.
- * Its branch is what keeps RM and R reachable, so it is deleted only then.
+ * Its branch is what keeps RM and R reachable, so it is deleted only then (or once the PR is merged, by recoverTipPr).
  * @returns the PR still waiting ({ number, head, rm, body }), or null
  */
 async function settleTipPr(repo, ref, tipBranch, record) {
@@ -183,6 +183,13 @@ async function settleTipPr(repo, ref, tipBranch, record) {
 async function recoverTipPr(repo, ref, tipBranch, record) {
   if (!record) return null;
   const closed = (await tipPrs(repo, tipBranch, 'closed'))[0];
+  if (closed && closed.merged) {
+    // Merged: RM is in {ref}, so the branch keeps nothing reachable. Deleted only while it adds nothing to {ref}.
+    const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${tipBranch}`, '-q', '.object.sha'], { silent: true })).out.trim();
+    if (/^[0-9a-f]{40}$/.test(at) && (await contains(repo, at, ref)) === true
+      && (await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${tipBranch}`], { silent: true })).code === 0) core.info(`Deleted ${tipBranch}: merged in #${closed.number}.`);
+    return null;
+  }
   if (!recoverable(closed, record, closed ? { inHead: await contains(repo, record, closed.head), inRef: await contains(repo, record, ref) } : {})) return null;
   const quiet = { silent: true };
   const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${tipBranch}`, '-q', '.object.sha'], quiet)).out.trim();
