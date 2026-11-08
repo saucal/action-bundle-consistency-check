@@ -18,6 +18,8 @@ const { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment
 const { isHealSubject, healOf, materializeTip, tipHead } = require('./lib/tip-head');
 
 function env(name, def = '') { return process.env[name] || def; }
+// Built from the runner's own env when the step passes no RUN_URL (the cleanup step), so no trace link is empty.
+const runUrl = env('RUN_URL') || `${env('GITHUB_SERVER_URL', 'https://github.com')}/${env('GITHUB_REPOSITORY')}/actions/runs/${env('GITHUB_RUN_ID')}`;
 
 /** DIFF_PATH is a directory of reverse-diff files (getRsyncDiff) or a single file; concat all. */
 function readDiff(diffPath) {
@@ -116,7 +118,7 @@ async function closeStale(repo, branch, why) {
   const quiet = { silent: true };
   const pr = (await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0].number'], quiet)).out.trim();
   if (/^\d+$/.test(pr)) {
-    await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${pr}/comments`, '-f', `body=Closed by consistency self-heal: ${why}`], quiet);
+    await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${pr}/comments`, '-f', `body=Closed by consistency self-heal: ${why} From the [consistency check run](${runUrl}).`], quiet);
     await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/pulls/${pr}`, '-f', 'state=closed'], quiet);
     core.info(`Closed stale PR #${pr}: ${why}`);
   }
@@ -242,7 +244,6 @@ async function routeTipPr(repo, num, logins) {
   const treeRoot = env('BUILT_DIR', 'built');
   const manifestPath = env('MANIFEST_PATH');
   const diffPath = env('DIFF_PATH');
-  const runUrl = env('RUN_URL');
   const adopt = /^(1|true)$/i.test(env('ADOPT_NON_COMPOSER'));
   const branch = `reconciliation-${ref}`;
   const tipBranch = tipBranchOf(ref);
