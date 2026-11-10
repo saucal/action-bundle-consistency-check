@@ -4,7 +4,7 @@ const exec = require('@actions/exec');
 const fs = require('fs');
 const path = require('path');
 const { makeResolvers } = require('./lib/resolvers');
-const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, recordNotice } = require('./lib/report');
+const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, remainsFailure, recordNotice } = require('./lib/report');
 const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
@@ -688,6 +688,6 @@ async function routeTipPr(repo, num, logins) {
   core.setOutput('branch', prBranch);
 
   // 5. Keep the job RED when unrecoverable drift remains (so Slack/ServiceApp alerting fires).
-  const left = remaining(classified);
-  if (left) core.setFailed(`Reconciliation ran, but drift remains: ${left} — see PR body.`);
+  const left = remaining(classified, true);
+  if (left) core.setFailed(remainsFailure(left, prNum, `${env('GITHUB_SERVER_URL', 'https://github.com')}/${repo}/pull/${prNum}`));
 })().catch((e) => core.setFailed(e.stack || String(e)));

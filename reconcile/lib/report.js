@@ -98,14 +98,17 @@ function reportBody(classified, meta) {
   return L.join('\n');
 }
 
-/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). `named` lists the former. */
+/** The drift a run leaves, for its failure message: what needs a decision vs what follows by itself ('' if none). `named` lists the items. */
 function remaining(classified, named = false) {
   const left = classified.filter((c) => !c.recoverable && c.category !== 'ignorable');
-  const later = left.filter((c) => LATER.has(c.category)).length;
+  const later = left.filter((c) => LATER.has(c.category)).map((c) => c.key);
   const decide = left.filter((c) => !LATER.has(c.category)).map((c) => c.key);
-  const names = named && decide.length ? ` (${decide.slice(0, 5).join(', ')}${decide.length > 5 ? ` and ${decide.length - 5} more` : ''})` : '';
-  return [decide.length && `${decide.length} item(s) need a decision${names}`, later && `${later} item(s) ${WAIT}`].filter(Boolean).join(', ');
+  const names = (keys) => (named ? ` (${keys.slice(0, 5).join(', ')}${keys.length > 5 ? ` and ${keys.length - 5} more` : ''})` : '');
+  return [decide.length && `${decide.length} item(s) need a decision${names(decide)}`, later.length && `${later.length} item(s) ${WAIT}${names(later)}`].filter(Boolean).join(', ');
 }
+
+/** The failure of a run that opened or updated a PR but left drift (`left` = remaining(…, true)): names the PR. */
+const remainsFailure = (left, pr, url) => `Reconciliation ran, but drift remains: ${left}${pr ? `; see PR #${pr}: ${url}` : ' — see the job summary.'}`;
 
 /** The held PR's auto-merge line: its reasons as a list, else where the body lists them. */
 const heldNote = (reasonLines) => `**Auto-merge:** held for a human${reasonLines ? `:\n\n${reasonLines}` : " — see “Repo changes this PR can't make”."}\n\n`;
@@ -138,4 +141,4 @@ const recordNotice = (ref, sha, rec, open) => `${ref} already has the server's s
   + (open ? `the record (${rec.slice(0, 7)}) waits until the item(s) left in the job summary are settled` : `recording ${rec === sha ? 'it' : `its merge ${rec.slice(0, 7)}`}`)
   + '. No PR, nothing deployed.';
 
-module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, recordNotice };
+module.exports = { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, remaining, remainsFailure, recordNotice };
