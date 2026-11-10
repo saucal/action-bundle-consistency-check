@@ -152,6 +152,7 @@ runs:
     - name: Pre-build Consistency check
       id: pre-build-consistency-check
       # The job's color is decided by "Fail on drift" below: red unless reconcile reports recovery.
+      # So its own drift annotations are warnings: a green recovery shows no red.
       continue-on-error: true
       uses: saucal/action-deploy-ssh@v4
       with:
@@ -168,6 +169,7 @@ runs:
         ssh-shell-params: ${{ inputs.ssh-shell-params }}
         ssh-extra-options: ${{ inputs.ssh-extra-options }}
         consistency-check: true
+        drift-annotation: warning
         run-pre: ${{ inputs.run-ssh-pre }}
         run-post: ${{ inputs.run-ssh-post }}
 
