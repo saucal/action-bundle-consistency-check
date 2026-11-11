@@ -134,7 +134,7 @@ outputs:
     description: "Newline-separated anchored paths the self-heal checks must not count this time (deferred, flagged or junk drift)."
     value: ${{ steps.reconcile.outputs.pending-paths }}
   reconcile-undeployed-pr:
-    description: "With commits not deployed yet and a heal that needs no review: the PR merging them on top of the heal (never auto-merged; merging it deploys). Also set when new drift joined it in place, was refused because it still waits, or when it was opened afresh for one closed without merging."
+    description: "With commits not deployed yet and a heal that needs no review, or one reviewed in a held PR into selfheal-base-<ref> and merged there: the PR merging them on top of the heal (never auto-merged; merging it deploys). Also set when new drift joined it in place, was refused because it still waits, or when it was opened afresh for one closed without merging."
     value: ${{ steps.reconcile.outputs.undeployed-pr || steps.cleanup.outputs.undeployed-pr }}
   reconcile-undeployed-pr-recovered:
     description: "The engineers' PR that was closed without merging while the built repo still records its heal; reconcile-undeployed-pr is the fresh PR opened in its place."
