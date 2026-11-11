@@ -18,8 +18,14 @@ const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync(process.env.GH_LOG, JSON.stringify(a) + '\\n');
 const rules = JSON.parse(fs.readFileSync(process.env.GH_RULES, 'utf8'));
-const hit = rules.find(([re]) => new RegExp(re).test(a.join(' ')));
-process.stdout.write(hit ? hit[1] : '');
+const i = rules.findIndex(([re]) => new RegExp(re).test(a.join(' ')));
+const hit = rules[i];
+let v = hit ? hit[1] : '';
+if (Array.isArray(v)) { // answers in turn, the last one repeated
+  const f = process.env.GH_RULES + '.' + i; const n = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0;
+  fs.writeFileSync(f, String(n + 1)); v = v[Math.min(n, v.length - 1)];
+}
+process.stdout.write(v);
 process.exit(hit && hit[2] ? hit[2] : 0);
 `;
 
@@ -52,10 +58,11 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
 
     fs.mkdirSync(path.join(ws, 'bin'));
     fs.writeFileSync(path.join(ws, 'bin', 'gh'), FAKE_GH, { mode: 0o755 });
-    const run = (n, rules) => {
+    const run = (n, rules, extra = {}) => {
       const log = path.join(ws, `gh-${n}.log`);
       const out = path.join(ws, `out-${n}`);
       fs.writeFileSync(out, '');
+      for (const f of fs.readdirSync(ws)) if (f.startsWith('rules.json')) fs.rmSync(path.join(ws, f));
       fs.writeFileSync(path.join(ws, 'rules.json'), JSON.stringify(rules));
       const env = { ...process.env, PATH: path.join(ws, 'bin') + path.delimiter + process.env.PATH, GH_LOG: log, GH_RULES: path.join(ws, 'rules.json'),
         RUNNER_TEMP: ws, GITHUB_OUTPUT: out, REPO: 'o/r', REF: 'main', SOURCE_DIR: proj, BUILT_DIR: server, RUN_URL: 'https://run',
@@ -63,6 +70,7 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
         GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
       env.GITHUB_STEP_SUMMARY = path.join(ws, `summary-${n}`); fs.writeFileSync(env.GITHUB_STEP_SUMMARY, '');
       delete env.SAPP_SERVER;
+      Object.assign(env, extra);
       const r = spawnSync(process.execPath, [path.join(__dirname, '..', '..', 'index.js')], { env, encoding: 'utf8' });
       const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).join(' ')) : [];
       const outputs = {};
@@ -87,13 +95,24 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     assert.match(fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8'), /This PR reviews only the heal.*`selfheal-base-main`/);
     assert.ok(!G(origin, 'branch', '--list', 'selfheal-undeployed-main'));
 
+    const del = (calls) => calls.findIndex((c) => /-X DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/.test(c));
+    const create = (calls) => calls.findIndex((c) => new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`).test(c));
+    const prOne = (calls) => calls.findIndex((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c));
+    const openPr1 = ['pulls\\?head=o:reconciliation-main&state=open -q \\.\\[0\\] //', JSON.stringify({ number: 12, body: '' })];
+
     // Run 1b: the next check while PR 1 waits: updated in place (same head, no push, base kept at D).
-    const oneB = run('1b', [...tipLists, ['git/ref/heads/selfheal-base-main', D],
-      ['pulls\\?head=o:reconciliation-main&state=open -q \\.\\[0\\] //', JSON.stringify({ number: 12, body: '' })]]);
+    const oneB = run('1b', [...tipLists, ['git/ref/heads/selfheal-base-main', D], ['pulls\\?base=selfheal-base-main&state=open', '1'], openPr1]);
     assert.ok(oneB.calls.some((c) => /PATCH repos\/o\/r\/pulls\/12 .* -f base=selfheal-base-main$/.test(c)), oneB.why);
     assert.ok(!oneB.calls.some((c) => /pr create|git\/refs -f ref=|-X DELETE/.test(c)), oneB.why);
     assert.match(oneB.r.stdout, /reconciliation-main already holds this reconciliation/);
     assert.strictEqual(G(origin, 'rev-parse', 'reconciliation-main'), r1);
+
+    // Run 1c: PR 1 closed unmerged: its base (at D, in main, no PR targeting it) is deleted, created again at D,
+    // and a NEW PR opens on it (the closed one is never reused).
+    const oneC = run('1c', [...tipLists, ['git/ref/heads/selfheal-base-main', [D, '']], ['pulls\\?base=selfheal-base-main&state=open', '0'],
+      [`compare/${D}\\.\\.\\.main`, 'ahead'], ['pr create', 'https://github.test/o/r/pull/15']]);
+    assert.ok(del(oneC.calls) >= 0 && create(oneC.calls) > del(oneC.calls) && prOne(oneC.calls) > create(oneC.calls), oneC.why);
+    assert.ok(!oneC.calls.some((c) => /pulls\/12/.test(c)), oneC.why);
 
     // The reviewer merges PR 1 (merge button: a 2-parent merge commit on selfheal-base-main).
     G(origin, 'branch', 'selfheal-base-main', D);
@@ -102,6 +121,14 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     G(tmp, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', `origin/reconciliation-main`);
     G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
     const m1 = G(origin, 'rev-parse', 'selfheal-base-main');
+    const merged12 = [`pulls\\?base=selfheal-base-main&state=closed`, JSON.stringify({ number: 12, head: r1, merge: m1 })];
+    const rejected = (runRes, num, why) => {
+      const at = (re) => runRes.calls.findIndex((c) => re.test(c));
+      assert.ok(del(runRes.calls) >= 0 && create(runRes.calls) > del(runRes.calls) && prOne(runRes.calls) > create(runRes.calls), runRes.why);
+      assert.ok(!runRes.outputs['build-sha'] && !runRes.outputs['undeployed-pr'], runRes.why);
+      assert.ok(!runRes.calls.some((c) => /force=true/.test(c)), runRes.why);
+      assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why}\\. Nothing was recorded; a new PR #${num} asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) > prOne(runRes.calls), runRes.why);
+    };
 
     // Run 2a: the server changed again after the review: m1 is not what it runs, so nothing is recorded; the
     // stale base is dropped (no fast-forward from m1 to D) and a NEW PR 1 reviews the heal built on D.
@@ -110,19 +137,32 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     fs.writeFileSync(php, reviewedPhp.replace('return 2', 'return 3'));
     fs.writeFileSync(path.join(ws, 'diff.txt'), deriveDrift(proj, server).contentDiffText);
     const twoA = run('2a', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
-      [`pulls\\?base=selfheal-base-main&state=closed`, JSON.stringify({ number: 12, head: r1 })], ['pr create', 'https://github.test/o/r/pull/14']]);
-    const at2a = (re) => twoA.calls.findIndex((c) => re.test(c));
-    assert.ok(at2a(/DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/) >= 0, twoA.why);
-    assert.ok(at2a(new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`)) > at2a(/DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/), twoA.why);
-    assert.ok(at2a(/pr create -R o\/r --head reconciliation-main --base selfheal-base-main /) >= 0, twoA.why);
-    assert.ok(!twoA.outputs['build-sha'] && !twoA.outputs['undeployed-pr'], twoA.why);
-    assert.ok(!twoA.calls.some((c) => /PATCH -F force=true|force=true/.test(c)), twoA.why);
+      merged12, ['pr create', 'https://github.test/o/r/pull/14']]);
+    rejected(twoA, 14, 'the server changed since the review: it no longer runs this heal');
     fs.writeFileSync(php, reviewedPhp);
     fs.writeFileSync(path.join(ws, 'diff.txt'), contentDiffText);
 
+    // Run 2b: a commit pushed to selfheal-base-main on top of m1: not PR 1's merge any more, rejected the same way.
+    G(tmp, 'commit', '-q', '--allow-empty', '-m', 'stray'); G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1plus = G(origin, 'rev-parse', 'selfheal-base-main');
+    const twoB = run('2b', [...tipLists, ['git/ref/heads/selfheal-base-main', m1plus], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
+      merged12, ['pr create', 'https://github.test/o/r/pull/16']]);
+    rejected(twoB, 16, `commits were pushed to the base branch on top of its merge ${m1.slice(0, 7)}`);
+
+    // Run 2c: PR 1 merged during the run (git saw the base at D, GitHub now says m1): kept, no PR, the next
+    // check takes the merge. 2d: the API could not answer about the merged PR: kept the same way.
+    G(origin, 'update-ref', 'refs/heads/selfheal-base-main', D);
+    const twoC = run('2c', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], merged12]);
+    assert.ok(del(twoC.calls) < 0 && create(twoC.calls) < 0 && !twoC.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoC.why);
+    assert.match(twoC.r.stdout, /could not be judged this run/);
+    G(origin, 'update-ref', 'refs/heads/selfheal-base-main', m1);
+    const twoD = run('2d', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], [`pulls\\?base=selfheal-base-main&state=closed`, 'HTTP 502', 1]]);
+    assert.ok(del(twoD.calls) < 0 && !twoD.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoD.why);
+    assert.match(twoD.r.stdout, /could not be judged this run/);
+    assert.ok(!G(origin, 'branch', '--list', 'selfheal-undeployed-main'));
+
     // Run 2: the follow-up check (server unchanged, the record still D).
-    const two = run(2, [...tipLists,
-      [`pulls\\?base=selfheal-base-main&state=closed`, JSON.stringify({ number: 12, head: r1 })],
+    const two = run(2, [...tipLists, merged12,
       ['compare/', 'alice'], ['api user', 'bot'], ['pr create', 'https://github.test/o/r/pull/13']]);
     const at2 = (re) => two.calls.findIndex((c) => re.test(c));
     assert.ok(at2(/pr create -R o\/r --head selfheal-undeployed-main --base main /) >= 0, two.why);
@@ -137,12 +177,23 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     assert.strictEqual(two.outputs['head-sha'], head);
     assert.strictEqual(G(origin, 'merge-tree', '--write-tree', U, head).split('\n')[0].length, 40, 'merges cleanly with main');
     assert.match(fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8'), /reviewed in #12; its merge `.{7}` is what the built repo records/);
-    assert.ok(two.calls.some((c) => /issues\/12\/comments -f body=The heal merged here .* went to the engineers in #13\. From the \[consistency check run\]\(https:\/\/run\)\.$/.test(c)), two.why);
-    // selfheal-base-main goes only after the engineers' branch (which contains m1) was pushed.
-    const del = at2(/DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/);
-    assert.ok(del >= 0, two.why);
-    assert.ok(!two.calls.some((c) => /POST repos\/o\/r\/git\/refs -f ref=refs\/heads\/selfheal-base-main/.test(c)), two.why);
-    assert.ok(!two.calls.some((c) => /pr create .*--base selfheal-base-main/.test(c)), two.why);
+    assert.ok(two.calls.some((c) => /issues\/12\/comments -f body=The heal merged here .* went to the engineers in #13\. `selfheal-base-main` is deleted once that record lands\. From the \[consistency check run\]\(https:\/\/run\)\.$/.test(c)), two.why);
+    // N3: the base stays until m1 is recorded (a failed verify re-records without a new review).
+    assert.ok(del(two.calls) < 0, two.why);
+    assert.ok(create(two.calls) < 0 && !two.calls.some((c) => /pr create .*--base selfheal-base-main/.test(c)), two.why);
+
+    // Run 3: the green check after verify recorded m1: the base goes.
+    G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${m1}`);
+    const three = run(3, [...tipLists, ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=open', '0']], { CLEANUP_ONLY: '1' });
+    assert.ok(del(three.calls) >= 0 && del(three.calls) < three.calls.findIndex((c) => /pulls\?head=o:reconciliation-main&state=open/.test(c)), three.why);
+
+    // Run 4 (M9): the undeployed commits are gone (the record is main's tip): the open held PR is retargeted to
+    // main, then selfheal-base-main is deleted.
+    G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${U}`);
+    const four = run(4, [...tipLists, openPr1]);
+    const patch = four.calls.findIndex((c) => /PATCH repos\/o\/r\/pulls\/12 .* -f base=main$/.test(c));
+    assert.ok(patch >= 0 && del(four.calls) > patch, four.why);
+    assert.ok(create(four.calls) < 0, four.why);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
     fs.rmSync(proj, { recursive: true, force: true });

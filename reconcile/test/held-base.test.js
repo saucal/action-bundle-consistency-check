@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawnSync } = require('child_process');
-const { baseBranchOf, reviewedMerge, tipNote } = require('../lib/undeployed-pr');
+const { baseBranchOf, reviewVerdict, tipNote } = require('../lib/undeployed-pr');
 const { healOf, isHealSubject, tipHead } = require('../lib/tip-head');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
@@ -17,15 +17,24 @@ test('PR 1 merges into a temporary selfheal-base-<ref>, never a selfheal-undeplo
   assert.strictEqual(baseBranchOf('main'), 'selfheal-base-main');
 });
 
-test('reviewedMerge: only PR 1\'s own 2-parent merge on D, whose tree is the heal built on D again', () => {
-  const o = { parents: ['d', 'r1'], prHead: 'r1', since: 'd', tree: 't', healTree: 't' };
-  assert.strictEqual(reviewedMerge(o), true);
-  assert.strictEqual(reviewedMerge({ ...o, parents: ['d'] }), false); // squash / rebase: not a merge commit
-  assert.strictEqual(reviewedMerge({ ...o, parents: ['r1', 'd'] }), false);
-  assert.strictEqual(reviewedMerge({ ...o, parents: ['d', 'x'] }), false); // not the merged PR's head
-  assert.strictEqual(reviewedMerge({ ...o, since: 'd2' }), false); // the deployed commit moved
-  assert.strictEqual(reviewedMerge({ ...o, healTree: 't2' }), false); // the server changed since the review
-  assert.strictEqual(reviewedMerge({ ...o, tree: '' }), false);
+test('reviewVerdict: only PR 1\'s own 2-parent merge on D of a heal commit on D, whose tree the server still runs', () => {
+  const D = 'd'.repeat(40);
+  const o = { at: 'm', merge: 'm', parents: [D, 'r1'], prHead: 'r1', prParent: D, prSubject: 'Reconcile server drift on main [commit only]', since: D, tree: 't', healTree: 't' };
+  assert.deepStrictEqual(reviewVerdict(o), { ok: true });
+  const why = (x) => (reviewVerdict({ ...o, ...x }) || {}).why || '';
+  assert.match(why({ parents: [D] }), /not a merge commit \(a squash or rebase merge\)/);
+  assert.match(why({ parents: [D, 'r1', 'x'] }), /has 3 parents: it brings in more than this PR's heal/); // M1
+  assert.match(why({ parents: ['e'.repeat(40), 'r1'] }), /the last deployed commit is ddddddd now, not the eeeeeee/);
+  assert.match(why({ parents: [D, 'x'] }), /does not merge this PR's head/);
+  assert.match(why({ prParent: 'u' }), /not a self-heal commit built on the last deployed commit/); // a head rebuilt on U, then reverted
+  assert.match(why({ prSubject: 'Revert stuff' }), /not a self-heal commit/);
+  assert.match(why({ critical: true }), /compromise signals/);
+  assert.match(why({ healTree: 't2' }), /the server changed since the review/);
+  assert.match(why({ tree: '' }), /the server changed/);
+  // The merge_commit_sha must be the base's head (M3): commits on top are a rejection, anything else is not about this PR.
+  assert.match(why({ at: 'm2', onTop: true }), /commits were pushed to the base branch on top of its merge m/);
+  assert.strictEqual(reviewVerdict({ ...o, at: 'm2' }), null);
+  assert.strictEqual(reviewVerdict({ ...o, merge: '' }), null);
 });
 
 // The engineers' PR head in the RM layout is m1 itself: the check, branchSame and the join must read it as
@@ -70,7 +79,8 @@ test('graph: PR 1 = r1 on D (heal only), m1 = merge(D, r1) has r1\'s tree, engin
     g('merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from saucal/reconciliation-main', r1);
     const m1 = g('rev-parse', 'HEAD');
     const parents = g('rev-list', '--parents', '-n', '1', m1).split(' ').slice(1);
-    assert.ok(reviewedMerge({ parents, prHead: r1, since: D, tree: g('rev-parse', `${m1}^{tree}`), healTree: g('rev-parse', `${r1}^{tree}`) }));
+    assert.deepStrictEqual(reviewVerdict({ at: m1, merge: m1, parents, prHead: r1, prParent: g('rev-parse', `${r1}^`), prSubject: g('log', '-1', '--format=%s', r1),
+      since: D, tree: g('rev-parse', `${m1}^{tree}`), healTree: g('rev-parse', `${r1}^{tree}`) }), { ok: true });
     // run A's tree: the heal on the tip = what git's merge of m1 and U writes when nothing conflicts.
     const tipTree = g('merge-tree', '--write-tree', U, m1).split('\n')[0];
     const tip = await tipHead({ git, base: U, rm: m1, tipTree, message: 'unused' });
@@ -83,22 +93,24 @@ test('index.js: held + undeployed opens PR 1 into selfheal-base-<ref>; its merge
   // PR 1: no RM/FT, head R on D, base the temporary branch, created non-force before the push.
   assert.match(src, /const heldTwo = !!\(tipResult && !toEngineers\);/);
   assert.match(src, /if \(heldTwo\) await must\(\['checkout', '-q', '-B', prBranch, headSha\], cwd\);\n  if \(tipResult && !heldTwo\) \{/);
-  assert.match(src, /if \(heldTwo && !\(await ensureBase\(repo, ref, branch, pending\.since\)\)\) return;\n  \/\/ Skip the push/);
+  assert.match(src, /const based = heldTwo \? await ensureBase\(repo, ref, branch, pending\.since, review\) : \{ rejected: null \};\n  if \(!based\) return;\n  \/\/ Skip the push/);
   assert.match(src, /baseSha: heldTwo \? pending\.since : baseSha/);
   assert.match(src, /const prBase = heldTwo \? baseBranchOf\(ref\) : ref;/);
   assert.match(src, /'--base', prBase,/);
   assert.match(src, /joinedComment\([^\n]*\), prBase\);/);
-  // The reviewed merge: only for a held heal with undeployed commits, not on compromise signals; its m1 is RM.
-  assert.match(src, /const reviewed = tipResult && !toEngineers && !inPlace && staged\.length && !\(\(security && security\.critical\) \|\| \[\]\)\.length\n    \? await reviewedHeal\(repo, ref, cwd, pending\.since, await must\(\['write-tree'\], cwd\)\) : null;/);
+  // The reviewed merge: only for a held heal with undeployed commits; its m1 is RM; pending paths are this run's.
+  assert.match(src, /const review = tipResult && !toEngineers && !inPlace && staged\.length\n    \? await reviewState\(repo, ref, cwd, pending\.since, await must\(\['write-tree'\], cwd\), !!\(\(security && security\.critical\) \|\| \[\]\)\.length\) : null;/);
+  assert.match(src, /const reviewed = review && review\.state === 'ok' \? review : null;/);
   assert.match(src, /const rm = reviewed \? \{ code: 0, out: reviewed\.m1 \} : await sh\('git', \['commit-tree'/);
   assert.match(src, /core\.setOutput\('auto-merge', toEngineers \|\| /); // verify records it
-  assert.match(src, /core\.setOutput\('pending-paths', reviewed \? reviewed\.pending : /);
+  assert.match(src, /reviewed \? pendingOnMerge\(autoMergeOn, autoMerge\)/);
+  assert.match(src, /\{ keepBase: !!reviewed \}\);/); // N3: the base outlives the engineers' PR opening
   // ensureBase never force-updates the base: create, or a non-force fast-forward.
   const eb = src.slice(src.indexOf('async function ensureBase'), src.indexOf('/** Route the undeployed-tip PR'));
   assert.match(eb, /'-F', 'force=false'/);
   assert.doesNotMatch(eb, /force=true|--force/);
   // The base goes with the reconciliation PR, after it is closed.
-  const cs = src.slice(src.indexOf('async function closeStale'), src.indexOf('async function reviewedHeal'));
+  const cs = src.slice(src.indexOf('async function closeStale'), src.indexOf('async function reviewState'));
   assert.ok(cs.indexOf("'state=closed'") < cs.indexOf('baseBranchOf('), cs);
 });
 
@@ -128,3 +140,43 @@ process.stdout.write(/pulls\\?head=o:reconciliation-main&state=open/.test(j) ? '
   assert.ok(at(/DELETE repos\/o\/r\/git\/refs\/heads\/reconciliation-main$/) > at(/pulls\/9 -f state=closed/), calls.join('\n'));
   assert.ok(at(/DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/) > at(/pulls\/9 -f state=closed/), calls.join('\n'));
 });
+
+// N3: the base outlives the engineers' PR opening; the next check deletes it once the record is its head, or once
+// {ref} contains it and no PR targets it (engineers' PR merged, PR 1 closed unmerged). Kept while PR 1 is open.
+for (const [name, rules, deleted] of [
+  ['the built repo records m1', [['git/ref/heads/selfheal-base-main', 'a'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', '0']], true],
+  ['PR 1 is open on a base at D, which the built repo records', [['git/ref/heads/selfheal-base-main', 'a'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', '1']], false],
+  ['PR 1 closed unmerged: main contains D, no PR targets the base', [['git/ref/heads/selfheal-base-main', 'd'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', '0'], ['compare/d{40}\\.\\.\\.main', 'ahead']], true],
+  ['PR 1 still open', [['git/ref/heads/selfheal-base-main', 'd'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', '1'], ['compare/d{40}\\.\\.\\.main', 'ahead']], false],
+  ['m1 not recorded, not in main (a failed verify)', [['git/ref/heads/selfheal-base-main', 'e'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', '0'], ['compare/e{40}\\.\\.\\.main', 'diverged']], false],
+  ['the open-PR listing failed', [['git/ref/heads/selfheal-base-main', 'd'.repeat(40)], ['pulls\\?base=selfheal-base-main&state=open', 'HTTP 502', 1], ['compare/d{40}\\.\\.\\.main', 'ahead']], false],
+]) {
+  test(`green check: selfheal-base-main ${deleted ? 'deleted' : 'kept'} when ${name}`, () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-base-drop-'));
+    const bin = path.join(ws, 'bin');
+    const built = path.join(ws, 'built');
+    fs.mkdirSync(bin); fs.mkdirSync(built);
+    fs.writeFileSync(path.join(ws, 'rules.json'), JSON.stringify(rules));
+    fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync(process.env.GH_LOG, JSON.stringify(a) + '\\n');
+const hit = JSON.parse(fs.readFileSync(process.env.GH_RULES, 'utf8')).find(([re]) => new RegExp(re).test(a.join(' ')));
+process.stdout.write(hit ? hit[1] : (/selfheal-undeployed-main&state=/.test(a.join(' ')) ? '[]' : ''));
+process.exit(hit && hit[2] ? hit[2] : 0);
+`, { mode: 0o755 });
+    const g = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { cwd: built });
+    g('init', '-q'); g('commit', '-q', '--allow-empty', '-m', `Build changes from ${'a'.repeat(40)}`);
+    const log = path.join(ws, 'gh.log');
+    const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, GH_LOG: log, GH_RULES: path.join(ws, 'rules.json'), RUNNER_TEMP: ws, CLEANUP_ONLY: '1', REPO: 'o/r', REF: 'main', BUILT_DIR: built, RUN_URL: 'u' };
+    delete env.GITHUB_OUTPUT; delete env.GITHUB_STEP_SUMMARY;
+    const run = spawnSync(process.execPath, [path.join(__dirname, '..', 'index.js')], { env, encoding: 'utf8' });
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l).join(' '));
+    fs.rmSync(ws, { recursive: true, force: true });
+    assert.strictEqual(run.status, 0, run.stdout + run.stderr);
+    // closeStale (no open reconciliation PR here) also deletes the base: count only the deletes before it.
+    const first = calls.findIndex((c) => /pulls\?head=o:reconciliation-main&state=open/.test(c));
+    const before = calls.slice(0, first);
+    assert.strictEqual(before.some((c) => /-X DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/.test(c)), deleted, calls.join('\n'));
+  });
+}

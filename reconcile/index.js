@@ -14,7 +14,7 @@ const { undeployed, recorded } = require('./lib/undeployed');
 const { stageOutputs, keepRefused } = require('./lib/stage');
 const { splitHeal } = require('./lib/split-heal');
 const { endRun, isRecovery } = require('./lib/outcome');
-const { baseBranchOf, reviewedMerge, tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote } = require('./lib/undeployed-pr');
+const { baseBranchOf, reviewVerdict, tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote } = require('./lib/undeployed-pr');
 const { isHealSubject, healOf, materializeTip, tipHead } = require('./lib/tip-head');
 
 function env(name, def = '') { return process.env[name] || def; }
@@ -115,7 +115,7 @@ async function must(args, cwd) {
 }
 
 /** A heal no longer needed: close the open reconciliation PR, saying why, and delete its branch. */
-async function closeStale(repo, branch, why) {
+async function closeStale(repo, branch, why, { keepBase = false } = {}) {
   const quiet = { silent: true };
   const pr = (await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0].number'], quiet)).out.trim();
   if (/^\d+$/.test(pr)) {
@@ -125,46 +125,82 @@ async function closeStale(repo, branch, why) {
   }
   if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`], quiet)).code === 0) core.info(`Deleted ${branch}.`);
   // G65: the held PR's temporary base goes with it (after the PR is closed: deleting a base closes its PR).
-  const base = branch.startsWith('reconciliation-') && baseBranchOf(branch.slice('reconciliation-'.length));
+  const base = !keepBase && branch.startsWith('reconciliation-') && baseBranchOf(branch.slice('reconciliation-'.length));
   if (base && (await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base}`], quiet)).code === 0) core.info(`Deleted ${base}.`);
 }
 
 /**
- * G65 PR 1 merged: selfheal-base-{ref}'s head m1 = merge(D, r1), made by merging the reconciliation PR, is
- * the reviewed heal when its tree is the heal this run built on D (`tree`, the staged index). null otherwise.
+ * G65: what selfheal-base-{ref} holds for this run: { state, at, number, m1, why }. 'ok': PR 1's merge m1 is
+ * the reviewed heal to record (lib/undeployed-pr reviewVerdict); 'rejected': a merged PR 1 not accepted, and
+ * why; 'none': nothing reviewed there (absent, at D, or no merged PR 1 behind it); 'unknown': git or the API
+ * could not answer, so the base is kept for the next run. `tree` is this run's heal on D (the staged index).
  */
-async function reviewedHeal(repo, ref, cwd, since, tree) {
+async function reviewState(repo, ref, cwd, since, tree, critical) {
   const base = baseBranchOf(ref);
-  const git = async (...a) => (await sh('git', a, { cwd, silent: true })).out.trim();
-  if ((await sh('git', ['fetch', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd, silent: true })).code !== 0) return null;
-  const at = await git('rev-parse', `origin/${base}`);
+  const quiet = { cwd, silent: true };
+  const git = async (...a) => (await sh('git', a, quiet)).out.trim();
+  const ls = await sh('git', ['ls-remote', '--heads', 'origin', `refs/heads/${base}`], quiet);
+  if (ls.code !== 0) return { state: 'unknown', at: '' };
+  const at = ls.out.trim().split(/\s/)[0] || '';
+  if (!/^[0-9a-f]{40}$/.test(at) || at === since) return { state: 'none', at };
+  if ((await sh('git', ['fetch', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], quiet)).code !== 0) return { state: 'unknown', at };
   const r = await sh('gh', ['api', `repos/${repo}/pulls?base=${base}&state=closed&per_page=20`,
-    '-q', `[.[] | select(.merged_at != null and .head.ref == "reconciliation-${ref}" and .merge_commit_sha == "${at}")][0] // empty | {number, head: .head.sha}`], { silent: true });
+    '-q', `[.[] | select(.merged_at != null and .head.ref == "reconciliation-${ref}")] | sort_by(.merged_at) | last // empty | {number, head: .head.sha, merge: .merge_commit_sha}`], { silent: true });
+  if (r.code !== 0) return { state: 'unknown', at };
   let pr = null;
-  try { pr = r.code === 0 && r.out.trim() ? JSON.parse(r.out) : null; } catch { pr = null; }
-  if (!pr || !reviewedMerge({ parents: (await git('rev-list', '--parents', '-n', '1', at)).split(' ').slice(1), prHead: pr.head, since,
-    tree: await git('rev-parse', `${at}^{tree}`), healTree: tree })) return null;
-  return { number: String(pr.number), m1: at, pending: pendingOf(await git('log', '-1', '--format=%B', pr.head)) };
+  try { pr = r.out.trim() ? JSON.parse(r.out) : null; } catch { return { state: 'unknown', at }; }
+  if (!pr) return { state: 'none', at };
+  const parents = pr.merge === at ? (await git('rev-list', '--parents', '-n', '1', at)).split(' ').slice(1) : [];
+  const headOk = parents.length === 2 && parents[1] === pr.head;
+  const v = reviewVerdict({ at, merge: pr.merge, parents, prHead: pr.head, since, critical, healTree: tree,
+    onTop: !!pr.merge && pr.merge !== at && (await sh('git', ['merge-base', '--is-ancestor', pr.merge, at], quiet)).code === 0,
+    prParent: headOk ? await git('rev-parse', `${pr.head}^`) : '', prSubject: headOk ? await git('log', '-1', '--format=%s', pr.head) : '',
+    tree: await git('rev-parse', `${at}^{tree}`) });
+  if (!v) return { state: 'none', at };
+  return { state: v.ok ? 'ok' : 'rejected', at, number: String(pr.number), m1: at, merge: pr.merge, why: v.why || '' };
 }
 
 /**
  * G65: selfheal-base-{ref} at the deployed commit `since`, PR 1's base. Created without force; one at an
- * older deployed commit moves forward (non-force, the open PR keeps going); anything else (a merged heal the
- * server no longer runs) is dropped with the PR it bases, and created again. false when that failed.
+ * older deployed commit moves forward (non-force, the open PR keeps going). One holding a rejected merge (or
+ * at a commit no fast-forward reaches) is dropped with the PR it bases and created again. Kept, and false
+ * (stop this run), when the base can't be judged (reviewState 'unknown') or moved during this run.
+ * @returns {false | { rejected: object|null }}
  */
-async function ensureBase(repo, ref, branch, since) {
+async function ensureBase(repo, ref, branch, since, review) {
   const base = baseBranchOf(ref);
   const quiet = { silent: true };
   const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${base}`, '-q', '.object.sha'], quiet)).out.trim();
-  if (at === since) return true;
+  if (at === since) return { rejected: null };
   if (/^[0-9a-f]{40}$/.test(at)) {
-    if ((await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${base}`, '-f', `sha=${since}`, '-F', 'force=false'], quiet)).code === 0) return true;
-    await closeStale(repo, branch, `it was built on ${at.slice(0, 7)}, which is no longer the last deployed commit (${since.slice(0, 7)}): a new PR reviews the heal built there.`);
+    if (!review || review.state === 'unknown' || review.at !== at) {
+      core.warning(`${base} is at ${at.slice(0, 7)} and could not be judged this run (an API or git error, or it moved during the run): kept as it is; the next check decides.`);
+      return false;
+    }
+    if ((await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${base}`, '-f', `sha=${since}`, '-F', 'force=false'], quiet)).code === 0) return { rejected: null };
+    await closeStale(repo, branch, `its base \`${base}\` (at ${at.slice(0, 7)}) can't move to the last deployed commit ${since.slice(0, 7)} without a force push: a new PR reviews the heal built there.`);
   }
   const made = await sh('gh', ['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/heads/${base}`, '-f', `sha=${since}`], quiet);
   if (made.code !== 0) { core.setFailed(`Could not create ${base} at ${since.slice(0, 7)}:\n${made.out}`); return false; }
   core.info(`Created ${base} at the last deployed commit ${since.slice(0, 7)}.`);
-  return true;
+  return { rejected: review && review.state === 'rejected' && review.at === at ? review : null };
+}
+
+/**
+ * G65: selfheal-base-{ref} outlives the engineers' PR opening (a failed verify then re-records m1 without a
+ * new review). With no PR targeting it, it goes once the built repo records its head, or once {ref} contains
+ * it (the engineers' PR merged, or PR 1 closed unmerged). Any unanswered call keeps it.
+ */
+async function dropSettledBase(repo, ref, record) {
+  const base = baseBranchOf(ref);
+  const quiet = { silent: true };
+  const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${base}`, '-q', '.object.sha'], quiet)).out.trim();
+  if (!/^[0-9a-f]{40}$/.test(at)) return;
+  // An open PR 1 keeps it: its base sits at D, which is also the record then.
+  const open = await sh('gh', ['api', `repos/${repo}/pulls?base=${base}&state=open`, '-q', 'length'], quiet);
+  if (open.code !== 0 || open.out.trim() !== '0') return;
+  const why = at === record ? 'the built repo records its heal' : (await contains(repo, at, ref)) === true ? `${ref} contains it and no PR targets it` : '';
+  if (why && (await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base}`], quiet)).code === 0) core.info(`Deleted ${base}: ${why}.`);
 }
 
 /**
@@ -290,10 +326,11 @@ async function routeTipPr(repo, num, logins) {
   const branch = `reconciliation-${ref}`;
   const tipBranch = tipBranchOf(ref);
   if (env('CLEANUP_ONLY')) {
+    const record = await lastBuild(treeRoot);
+    await dropSettledBase(repo, ref, record);
     await closeStale(repo, branch, 'the consistency check is green — the server matches the deployed build, so this reconciliation is no longer needed.');
     // Green is what an open undeployed-tip PR expects (the server runs its recorded heal): keep it unless
     // stale. A closed one whose heal is still the record gets a fresh PR (and the loud alert again).
-    const record = await lastBuild(treeRoot);
     if (!(await settleTipPr(repo, ref, tipBranch, record))) await recoverTipPr(repo, ref, tipBranch, record, runUrl);
     return;
   }
@@ -333,6 +370,7 @@ async function routeTipPr(repo, num, logins) {
   // the heal is built on the record and the heal on the tip on what merging the PR would make, so the
   // PR keeps every heal; its head only gains commits. tipStart is where the heal on the tip starts.
   const record = await lastBuild(treeRoot);
+  await dropSettledBase(repo, ref, record);
   const waiting = (await settleTipPr(repo, ref, tipBranch, record)) || await recoverTipPr(repo, ref, tipBranch, record, runUrl);
   const refuse = async (why) => {
     await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${waiting.number}/comments`, '-f', `body=${why} From the [consistency check run](${runUrl}).`], { silent: true });
@@ -540,8 +578,9 @@ async function routeTipPr(repo, num, logins) {
   // reviews the heal alone, into selfheal-base-{ref}; once merged, its merge m1 is the heal recorded
   // here and the engineers' PR follows, exactly as unattended. Never on compromise signals (no verify).
   let toEngineers = !!(tipResult && autoMergeOn && autoMerge && autoMerge.ok);
-  const reviewed = tipResult && !toEngineers && !inPlace && staged.length && !((security && security.critical) || []).length
-    ? await reviewedHeal(repo, ref, cwd, pending.since, await must(['write-tree'], cwd)) : null;
+  const review = tipResult && !toEngineers && !inPlace && staged.length
+    ? await reviewState(repo, ref, cwd, pending.since, await must(['write-tree'], cwd), !!((security && security.critical) || []).length) : null;
+  const reviewed = review && review.state === 'ok' ? review : null;
   if (reviewed) {
     toEngineers = true;
     core.info(`PR #${reviewed.number} merged the reviewed heal as ${reviewed.m1.slice(0, 7)}: recording it, and the undeployed commits go to their engineers.`);
@@ -585,7 +624,8 @@ async function routeTipPr(repo, num, logins) {
   core.setOutput('auto-merge', toEngineers || (autoMergeOn && autoMerge && autoMerge.ok) ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
   // Auto-merge off: what this run leaves alone (the recovery path's verify still runs then).
-  core.setOutput('pending-paths', reviewed ? reviewed.pending : ((autoMerge && (autoMergeOn ? autoMerge.pending : autoMerge.open)) || []).join('\n'));
+  // Reviewed: what this run's heal on D leaves on the server, i.e. what PR 1 left (its tree is this heal's).
+  core.setOutput('pending-paths', ((autoMerge && (reviewed ? pendingOnMerge(autoMergeOn, autoMerge) : autoMergeOn ? autoMerge.pending : autoMerge.open)) || []).join('\n'));
   // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
   // A "needs a human" reason is dropped only when the body lists every item it names, so a hold always shows why.
   const cantMake = new Set(classified.filter((c) => !c.recoverable && c.category !== 'ignorable').map((c) => `${c.key} (${c.category})`));
@@ -671,7 +711,7 @@ async function routeTipPr(repo, num, logins) {
       [`Reconcile server drift on ${ref} [commit only]`, '', `Reconciled on top of the last deployed commit (${pending.since.slice(0, 7)}): the server's state, which the built repo records.`,
         ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
     if (rm.code !== 0) { core.setFailed(`git commit-tree failed:\n${rm.out}`); return; }
-    buildSha = rm.out.trim(); // reviewed: m1, fetched by reviewedHeal
+    buildSha = rm.out.trim(); // reviewed: m1, fetched by reviewState
     // The head (lib/tip-head): RM itself when git merges it with U into exactly the heal on the tip, so
     // the merge button writes the final tip merge(U, RM); else FT, a resolving merge with run A's tree.
     // In place, the open PR's head stays an ancestor (it only gains commits).
@@ -690,7 +730,8 @@ async function routeTipPr(repo, num, logins) {
     // A PR that replaced a closed one keeps saying so when a join rewrites its body.
     if (toEngineers && inPlace) body = keptReplacesNote(inPlace.body) + body;
   }
-  if (heldTwo && !(await ensureBase(repo, ref, branch, pending.since))) return;
+  const based = heldTwo ? await ensureBase(repo, ref, branch, pending.since, review) : { rejected: null };
+  if (!based) return;
   // Skip the push when the open branch already holds this exact result on this exact base:
   // a new commit every run would dismiss any review on the PR (stale-review ruleset).
   const remote = await sh('git', ['fetch', 'origin', prBranch], { cwd });
@@ -712,7 +753,8 @@ async function routeTipPr(repo, num, logins) {
 
   // 4. Upsert the PR via gh (GH_TOKEN is in env); the description is rewritten every run.
   // The undeployed-tip PR supersedes an open reconciliation PR (one PR per ref).
-  if (toEngineers) await closeStale(repo, branch, `superseded by the PR from \`${tipBranch}\`: the heal is recorded on its own and the undeployed commits go to their engineers.`);
+  // Reviewed: selfheal-base-{ref} stays until m1 is recorded or merged (dropSettledBase).
+  if (toEngineers) await closeStale(repo, branch, `superseded by the PR from \`${tipBranch}\`: the heal is recorded on its own and the undeployed commits go to their engineers.`, { keepBase: !!reviewed });
   const prTitle = toEngineers ? tipTitle(ref) : `Reconcile server drift on ${ref} [commit only]`;
   const prBase = heldTwo ? baseBranchOf(ref) : ref;
   const updated = await updatePr(repo, ref, prBranch, body, runUrl, prTitle,
@@ -730,11 +772,16 @@ async function routeTipPr(repo, num, logins) {
     prNum = (created.out.match(/\/pull\/(\d+)/) || [])[1] || '';
     core.setOutput('pr', prNum);
   }
+  // Owner trace rule: a merged PR 1 whose merge was not taken as the reviewed heal says why, and where review moved.
+  if (based.rejected) {
+    await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${based.rejected.number}/comments`, '-f', `body=This merge (${based.rejected.merge.slice(0, 7)}) was not accepted as the reviewed heal because ${based.rejected.why}. Nothing was recorded; ${prNum ? `a new PR #${prNum}` : 'a new PR'} asks for review again. From the [consistency check run](${runUrl}).`], { silent: true });
+    core.warning(`PR #${based.rejected.number}'s merge was not accepted as the reviewed heal: ${based.rejected.why}.`);
+  }
   // One held PR into {ref} (no undeployed commits left): a selfheal-base-{ref} it was retargeted off goes.
   if (prBranch === branch && !heldTwo) await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${baseBranchOf(ref)}`], { silent: true });
   if (toEngineers && prNum) {
     await routeTipPr(repo, prNum, logins);
-    if (reviewed) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${reviewed.number}/comments`, '-f', `body=The heal merged here (${reviewed.m1.slice(0, 7)}) is recorded as deployed once a build of it reproduces the server; the undeployed commits on \`${ref}\` went to the engineers in #${prNum}. From the [consistency check run](${runUrl}).`], { silent: true });
+    if (reviewed) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${reviewed.number}/comments`, '-f', `body=The heal merged here (${reviewed.m1.slice(0, 7)}) is recorded as deployed once a build of it reproduces the server; the undeployed commits on \`${ref}\` went to the engineers in #${prNum}. \`selfheal-base-${ref}\` is deleted once that record lands. From the [consistency check run](${runUrl}).`], { silent: true });
     core.setOutput('undeployed-pr', prNum);
     core.setOutput('engineers', logins.map((l) => `@${l}`).join(', '));
   }

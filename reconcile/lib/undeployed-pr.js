@@ -96,11 +96,23 @@ const keptReplacesNote = (body) => {
 const baseBranchOf = (ref) => `selfheal-base-${ref}`;
 
 /**
- * Is the base branch's head the reviewed heal to record? Only PR 1's own merge commit (2 parents: D, then
- * the merged PR head r1) whose tree is the heal this run builds on D again: the server still runs it.
- * @param {{ parents: string[], prHead: string, since: string, tree: string, healTree: string }} o
+ * Is the base branch's head `at` the reviewed heal to record, given the newest merged PR 1 (`merge` its
+ * merge_commit_sha, `prHead` its head)? Only PR 1's own merge commit: 2 parents, D (`since`) then the
+ * merged head, which is a heal commit on D; its tree is the heal this run builds on D again (the server
+ * still runs it); no compromise signals (those are never recorded unattended).
+ * @returns {{ ok: true } | { why: string } | null} null: the base does not hold that merge at all
  */
-const reviewedMerge = ({ parents, prHead, since, tree, healTree }) => !!(parents.length === 2 && parents[0] === since
-  && parents[1] === prHead && tree && tree === healTree);
+const reviewVerdict = ({ at, merge, onTop = false, parents = [], prHead, prParent = '', prSubject = '', since, tree, healTree, critical = false }) => {
+  if (!at || !merge) return null;
+  if (at !== merge) return onTop ? { why: `commits were pushed to the base branch on top of its merge ${merge.slice(0, 7)}` } : null;
+  if (parents.length < 2) return { why: 'it is not a merge commit (a squash or rebase merge): the record must be a merge of the deployed commit and the heal' };
+  if (parents.length > 2) return { why: `its merge commit has ${parents.length} parents: it brings in more than this PR's heal` };
+  if (parents[0] !== since) return { why: `the last deployed commit is ${since.slice(0, 7)} now, not the ${parents[0].slice(0, 7)} it was merged on` };
+  if (parents[1] !== prHead) return { why: "its merge commit does not merge this PR's head" };
+  if (prParent !== since || !/^Reconcile server drift on .*\[commit only\]/.test(prSubject)) return { why: "this PR's head is not a self-heal commit built on the last deployed commit" };
+  if (critical) return { why: 'the heal carries compromise signals, which are never recorded unattended' };
+  if (!tree || tree !== healTree) return { why: 'the server changed since the review: it no longer runs this heal' };
+  return { ok: true };
+};
 
-module.exports = { baseBranchOf, reviewedMerge, tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote };
+module.exports = { baseBranchOf, reviewVerdict, tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote };
