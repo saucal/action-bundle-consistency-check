@@ -223,3 +223,12 @@ test('assessDiff: text dense with include/eval/exec keywords and no ";" scans in
   assert.ok(fastHolds('include still found', ['include( __DIR__ . "/x.ico" );']).includes('include-non-php'));
   assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ["shell_exec($_GET['c']);"] })).critical.some((h) => h.rule === 'shell-request'));
 });
+
+test('assessDiff: a line over 10 KB is held as oversized-line without running the line rules', () => {
+  for (const [label, l] of [['spaces', `$r = array_filter(${' '.repeat(100000)}$a);`], ['include', 'include"a"'.repeat(10000)], ['eval', 'eval('.repeat(20000)]]) {
+    assert.deepStrictEqual(fastHolds(label, ['$ok = 1;', l]), ['oversized-line'], label);
+  }
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', 'x'.repeat(20000)] }));
+  assert.deepStrictEqual(r.holds, [{ file: 'plugins/x/x.php', rule: 'oversized-line', line: 2 }]);
+  assert.deepStrictEqual(fastHolds('just under', [' '.repeat(10240)]), []);
+});

@@ -155,7 +155,12 @@ function assessDiff(diff) {
     if (MU_PLUGINS_RE.test(file)) hold('must-use-plugin');
 
     const lines = chunk.split('\n');
-    const added = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+    // A line over 10 KB is generated or minified, not a hand edit: held unread, blanked so no rule crawls it.
+    const added = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l, i) => {
+      if (l.length <= 10241) return l.slice(1); // 10 KB after the '+'
+      hold('oversized-line', i + 1);
+      return '';
+    });
     const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1));
 
     // Every rule, on every text type: a delta is too small for the PHP-only noise filter to matter.
