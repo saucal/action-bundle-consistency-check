@@ -7,13 +7,13 @@ const path = require('path');
 // a hit only holds the heal for a human, it never deletes anything.
 // [rule, regex, severity, phpOnly]. Only 'critical' holds a heal; 'warn' is listed for the reviewer.
 // Measured against woocommerce/jetpack/elementor/wordfence: warn rules fire on legit code, critical don't.
-// shortcut: statement spans ([^;]{0,2000}) are capped so text full of eval(/include keywords and no ';'
-// stays linear (each keyword rescans to the next ';'); a call padded past 2000 chars of real code escapes.
+// shortcut: statement spans ([^;]{0,1000}) are capped so text full of eval(/include keywords and no ';'
+// stays linear (each keyword rescans to the next ';'); a call padded past 1000 chars of real code escapes.
 const RULES = [
   ['eval-decoded', /\b(?:eval|assert|create_function)\s*\(\s*@?\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13|hex2bin|urldecode)\s*\(/i, 'critical', true],
-  ['eval-request', /\b(?:eval|assert|create_function)\s*\([^;]{0,2000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
-  ['eval-request', /\bpreg_replace\s*\(\s*["'][^"']*\/[a-zA-Z]*e[a-zA-Z]*["']\s*,[^;]{0,2000}\$_(?:GET|POST|REQUEST|COOKIE)\b/, 'critical', true],
-  ['shell-request', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\([^;]{0,2000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
+  ['eval-request', /\b(?:eval|assert|create_function)\s*\([^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
+  ['eval-request', /\bpreg_replace\s*\(\s*["'][^"']*\/[a-zA-Z]*e[a-zA-Z]*["']\s*,[^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/, 'critical', true],
+  ['shell-request', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\([^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
   ['shell-exec', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\(/i, 'warn', true],
   ['file-upload', /\bmove_uploaded_file\s*\(/i, 'warn', true],
   ['hides-users', /["'](?:pre_user_query|users_list_table_query_args|views_users)["']/, 'warn', true],
@@ -91,7 +91,7 @@ const DELTA_RULES = [
   ['decode', /\b(?:base64_decode|gzinflate|gzuncompress|str_rot13|hex2bin|atob)\s*\(/i],
   ['globals', /\$GLOBALS\s*\[/],
   ['raw-input', /php:\/\/input/i],
-  ['include-non-php', /\b(?:include|require)(?:_once)?\b[^;]{0,2000}["'][^"';]*\.(?!php\b)[a-z0-9]{2,5}["']/i],
+  ['include-non-php', /\b(?:include|require)(?:_once)?\b[^;]{0,1000}["'][^"';]*\.(?!php\b)[a-z0-9]{2,5}["']/i],
   ['dynamic-call', /\$\w+\(\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b/],
   ['chr-chain', /(?:chr\(\d+\)\.?){3,}/i],
   // Request data reaching new code is how a callback or variable-function shell gets its command.
