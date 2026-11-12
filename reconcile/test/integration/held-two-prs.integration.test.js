@@ -146,7 +146,10 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
       assert.ok(del(runRes.calls) >= 0 && create(runRes.calls) > del(runRes.calls) && prOne(runRes.calls) > create(runRes.calls), runRes.why);
       assert.ok(!runRes.outputs['build-sha'] && !runRes.outputs['undeployed-pr'], runRes.why);
       assert.ok(!runRes.calls.some((c) => /force=true/.test(c)), runRes.why);
-      assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Nothing was recorded; a new PR #${num} asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) > prOne(runRes.calls), runRes.why);
+      // ADV3-M1: traced on PR 1 before its base goes; the new PR's number follows once it exists.
+      const said = at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Nothing was recorded; \`selfheal-base-main\` \\(at [0-9a-f]{7}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`));
+      assert.ok(said >= 0 && said < del(runRes.calls), runRes.why);
+      assert.ok(at(new RegExp(`issues/12/comments -f body=PR #${num} is the new review of this heal\\. From`)) > prOne(runRes.calls), runRes.why);
     };
 
     // Run 2a: the server changed again after the review: m1 is not what it runs, so nothing is recorded; the
@@ -308,7 +311,8 @@ test('ADV-I1: new eligible drift after PR 1 merged never splits past m1: the bas
     const create = at(new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`));
     const pr = at(/pr create -R o\/r --head reconciliation-main --base selfheal-base-main /);
     assert.ok(del >= 0 && create > del && pr > create, two.why);
-    assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; a new PR #14 asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) > pr, two.why);
+    assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; \`selfheal-base-main\` \\(at ${m1.slice(0, 7)}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) < del, two.why);
+    assert.ok(at(/issues\/12\/comments -f body=PR #14 is the new review of this heal\. From/) > pr, two.why);
     const r2 = G(origin, 'rev-parse', 'reconciliation-main');
     assert.strictEqual(G(origin, 'rev-parse', `${r2}^`), D);
     assert.deepStrictEqual(G(origin, 'diff', '--name-only', D, r2).split('\n').sort(), ['plugins/customx/customx.php', 'plugins/heldx/heldx.php'], 'the new PR 1 reviews both');
@@ -378,7 +382,7 @@ test('invariants 1, 2 and 5: a run whose PR targets selfheal-base-main never aut
     assert.doesNotMatch(body, /Auto-merge:\*\* eligible/);
     assert.match(body, /\*\*Auto-merge:\*\* held for a human:\n\n- `selfheal-base-main` holds PR #12's merge, not accepted as the reviewed heal \(the server changed since the review: it no longer runs this heal\): this heal is reviewed again/);
     // Invariant 5: traced on PR 1.
-    assert.ok(two.calls.some((c) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; a new PR #14 asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(c)), two.why);
+    assert.ok(two.calls.some((c) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; \`selfheal-base-main\` \\(at ${m1.slice(0, 7)}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(c)), two.why);
 
     // Invariant 2, fail closed: GitHub can't read the base, or can't list its merged PRs: held, stopped with a
     // warning, nothing pushed, created or deleted, never auto-merge.

@@ -229,6 +229,11 @@ async function ensureBase(repo, ref, branch, since, review) {
       return false;
     }
     if ((await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${name}`, '-f', `sha=${since}`, '-F', 'force=false'], quiet)).code === 0) { base.at = since; return { rejected: null }; }
+    // Owner trace rule: PR 1 hears why before its base goes, so a later failure in this run can't leave the deletion untraced.
+    if (review.state === 'rejected') {
+      await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${review.number}/comments`, '-f', `body=This merge (${review.merge.slice(0, 7)}) was not accepted as the reviewed heal because ${review.why}. Nothing was recorded; \`${name}\` (at ${at.slice(0, 7)}) is deleted and a new PR follows to review the heal again. From the [consistency check run](${runUrl}).`], quiet);
+      core.warning(`PR #${review.number}'s merge was not accepted as the reviewed heal: ${review.why}.`);
+    }
     await closeStale(repo, branch, `its base \`${name}\` (at ${at.slice(0, 7)}) can't move to the last deployed commit ${since.slice(0, 7)} without a force push: a new PR reviews the heal built there.`, { baseNoted: review.state === 'rejected' });
   }
   const made = await sh('gh', ['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/heads/${name}`, '-f', `sha=${since}`], quiet);
@@ -839,10 +844,8 @@ async function routeTipPr(repo, num, logins) {
     core.setOutput('pr', prNum);
   }
   // Owner trace rule: a merged PR 1 whose merge was not taken as the reviewed heal says why, and where review moved.
-  if (based.rejected) {
-    await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${based.rejected.number}/comments`, '-f', `body=This merge (${based.rejected.merge.slice(0, 7)}) was not accepted as the reviewed heal because ${based.rejected.why}. Nothing was recorded; ${prNum ? `a new PR #${prNum}` : 'a new PR'} asks for review again. From the [consistency check run](${runUrl}).`], { silent: true });
-    core.warning(`PR #${based.rejected.number}'s merge was not accepted as the reviewed heal: ${based.rejected.why}.`);
-  }
+  // (ensureBase posted why before deleting the base.)
+  if (based.rejected && prNum) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${based.rejected.number}/comments`, '-f', `body=PR #${prNum} is the new review of this heal. From the [consistency check run](${runUrl}).`], { silent: true });
   // One held PR into {ref} (no undeployed commits left): a selfheal-base-{ref} it was retargeted off goes.
   if (prBranch === branch && !heldTwo) await dropBase(repo, `no undeployed commits are left, so ${prNum ? `PR #${prNum}` : 'the reconciliation PR'} reviews the heal into \`${ref}\`.`);
   if (toEngineers && prNum) {
