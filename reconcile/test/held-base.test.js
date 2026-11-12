@@ -99,7 +99,7 @@ test('index.js: held + undeployed opens PR 1 into selfheal-base-<ref>; its merge
   assert.match(src, /'--base', prBase,/);
   assert.match(src, /joinedComment\([^\n]*\), prBase\);/);
   // The reviewed merge: only for a held heal with undeployed commits; its m1 is RM; pending paths are this run's.
-  assert.match(src, /const review = tipResult && !toEngineers && !inPlace && staged\.length\n    \? await reviewState\(repo, ref, cwd, pending\.since, await must\(\['write-tree'\], cwd\), !!\(\(security && security\.critical\) \|\| \[\]\)\.length\) : null;/);
+  assert.match(src, /const review = tipResult && !toEngineers && !inPlace && staged\.length\n    \? await reviewState\(cwd, pending\.since, await must\(\['write-tree'\], cwd\), !!\(\(security && security\.critical\) \|\| \[\]\)\.length\) : null;/);
   assert.match(src, /const reviewed = review && review\.state === 'ok' \? review : null;/);
   assert.match(src, /const rm = reviewed \? \{ code: 0, out: reviewed\.m1 \} : await sh\('git', \['commit-tree'/);
   assert.match(src, /core\.setOutput\('auto-merge', toEngineers \|\| /); // verify records it
@@ -111,7 +111,7 @@ test('index.js: held + undeployed opens PR 1 into selfheal-base-<ref>; its merge
   assert.doesNotMatch(eb, /force=true|--force/);
   // The base goes with the reconciliation PR, after it is closed.
   const cs = src.slice(src.indexOf('async function closeStale'), src.indexOf('async function reviewState'));
-  assert.ok(cs.indexOf("'state=closed'") < cs.indexOf('baseBranchOf('), cs);
+  assert.ok(cs.indexOf("'state=closed'") < cs.indexOf('dropBase('), cs);
 });
 
 // Green check (CLEANUP_ONLY) with PR 1 open: the PR is closed, then its branch and the temporary base go.
@@ -124,7 +124,7 @@ test('cleanup step: closing the held PR deletes selfheal-base-<ref> after it', (
 const a = process.argv.slice(2);
 require('fs').appendFileSync(process.env.GH_LOG, JSON.stringify(a) + '\\n');
 const j = a.join(' ');
-process.stdout.write(/pulls\\?head=o:reconciliation-main&state=open/.test(j) ? '9' : /selfheal-undeployed-main&state=/.test(j) ? '[]' : '');
+process.stdout.write(/pulls\\?head=o:reconciliation-main&state=open/.test(j) ? '9' : /selfheal-undeployed-main&state=/.test(j) ? '[]' : /git\\/ref\\/heads\\/selfheal-base-main/.test(j) ? '${'d'.repeat(40)}' : '');
 `, { mode: 0o755 });
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'init', '-q'], { cwd: built });
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', `Build changes from ${'a'.repeat(40)}`], { cwd: built });
