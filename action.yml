@@ -221,6 +221,16 @@ runs:
         tools: composer
         coverage: none
 
+    # The scanner's YARA tier (signature-base webshell rules, fetched by reconcile at run time). A failed
+    # install is not fatal: reconcile then holds every server-derived item as yara-unavailable.
+    - name: Install yara-python for reconcile
+      if: ${{ !cancelled() && steps.pre-build-consistency-check.outcome == 'failure' && inputs.reconcile == '1' }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/yara-venv"
+        "$RUNNER_TEMP/yara-venv/bin/pip" install --quiet --disable-pip-version-check --only-binary=:all: yara-python==4.5.4
+
     - name: Reconcile drift
       id: reconcile
       if: ${{ !cancelled() && steps.pre-build-consistency-check.outcome == 'failure' && inputs.reconcile == '1' }}
@@ -240,6 +250,7 @@ runs:
         SAPP_VULNS_KEY: ${{ inputs.sapp-vulns-key }}
         SAPP_APP_USER: ${{ inputs.sapp-app-user }}
         SAPP_APP_PASS: ${{ inputs.sapp-app-pass }}
+        YARA_PYTHON: ${{ runner.temp }}/yara-venv/bin/python
       # Composer SatisPress auth is configured upstream by action-prepare-composer (run via
       # action-bundle-prepare earlier in this same job), which writes source/auth.json. Every
       # composer call the reconcile makes runs in source/ and reads it — no auth setup here.

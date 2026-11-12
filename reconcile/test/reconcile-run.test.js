@@ -478,6 +478,33 @@ test('tracked: compromise signals -> nothing copied, held, no auto-merge', async
   assert.strictEqual(res.autoMerge.ok, false);
 });
 
+test('tracked: the server copy is scanned as a whole file, and the hold names the YARA rule and its author', async () => {
+  const { TEXTBOOK } = require('./helpers/yara-stub');
+  const f = trackedFixture("<?php // v2\n" + TEXTBOOK + '\n');
+  fs.writeFileSync(path.join(f.sourceDir, 'plugins/custom/main.php'), "<?php // v1\n" + TEXTBOOK + '\n'); // the diff adds only line 1
+  const res = await reconcileRun({ ...f, resolvers: noResolve, runner: fakeRunner() });
+  const c = res.classified.find((x) => x.key === 'custom');
+  assert.strictEqual(c.category, 'suspicious');
+  assert.match(c.remediation, /matched WEBSHELL_PHP_Generic_Eval \(Arnim Rupp \(https:\/\/github\.com\/ruppde\), signature-base\)/);
+  assert.ok(res.security.critical.some((h) => h.file === 'plugins/custom/main.php' && h.rule === 'yara:WEBSHELL_PHP_Generic_Eval'), JSON.stringify(res.security));
+  assert.match(fs.readFileSync(path.join(f.sourceDir, 'plugins/custom/main.php'), 'utf8'), /^<\?php \/\/ v1/, 'not copied');
+});
+
+test('YARA unavailable: server-derived items are held as yara-unavailable, never critical, never auto-merged', async () => {
+  const yara = require('../lib/yara');
+  const { stub } = require('./helpers/yara-stub');
+  yara.setRunner(() => ({ error: 'checksum mismatch' }));
+  try {
+    const t = await reconcileRun({ ...trackedFixture("<?php // v1 with a server fix\n"), resolvers: noResolve, runner: fakeRunner() });
+    assert.deepStrictEqual(t.security.critical, []);
+    assert.strictEqual(t.autoMerge.ok, false);
+    assert.ok(t.autoMerge.reasons.some((r) => /^custom: .*yara-unavailable/.test(r)), t.autoMerge.reasons.join(' | '));
+    const d = await reconcileRun({ ...deferredCriticalFixture(), only: new Set(['hello-dolly']) });
+    assert.strictEqual(d.autoMerge.ok, false, 'an unscanned server copy never merges');
+    assert.ok(d.autoMerge.reasons.includes('hello-dolly: yara-unavailable'), d.autoMerge.reasons.join(' | '));
+  } finally { yara.setRunner(stub); }
+});
+
 test('tracked: a hold-level signal is copied for review but blocks auto-merge', async () => {
   const f = trackedFixture("<?php // v1\n$cfg = base64_decode($opt);\n");
   const res = await reconcileRun({ ...f, resolvers: noResolve, runner: fakeRunner() });
@@ -864,7 +891,7 @@ function deferredCriticalFixture() {
   const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
   for (const slug of ['hello-dolly', 'code-snippets']) fs.mkdirSync(path.join(treeRoot, 'plugins', slug), { recursive: true });
   // Shape of an obfuscated loader (assembled, not a working sample).
-  fs.writeFileSync(path.join(treeRoot, 'plugins/code-snippets/code-snippets.php'), "<?php\neval(base64_decode('ZWNobyAxOw=='));\n");
+  fs.writeFileSync(path.join(treeRoot, 'plugins/code-snippets/code-snippets.php'), "<?php\n" + 'ev' + "al(base64_decode($_POST['x']));\n");
   fs.writeFileSync(path.join(treeRoot, 'plugins/hello-dolly/hello.php'), '<?php // clean\n');
   return { sourceDir: tmpSource(), treeRoot, manifestText: 'deleting plugins/hello-dolly/hello.php\ndeleting plugins/code-snippets/code-snippets.php\n',
     resolvers, runner: fakeRunner(), vulnCheck: async (i) => i.map(() => ({ matches: [] })) };

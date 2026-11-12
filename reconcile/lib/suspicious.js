@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const yara = require('./yara');
 
 // Signals of compromised PHP in content that came from the server with no registry behind it
 // (patch residuals, adopted/tracked files, unknown components). Deliberately biased to flag:
@@ -53,6 +54,34 @@ function scanText(text, file, attack = false) {
   return hits;
 }
 
+/**
+ * A rule name for messages. A YARA match names the rule and its author.
+ * The author text is required by the Detection Rule License 1.1 (signature-base) for messages based
+ * on matches — do not remove it in cleanups.
+ */
+function describe(h) {
+  return String(h.rule).startsWith('yara:') ? `matched ${h.rule.slice(5)} (${h.author || 'unknown author'}, signature-base)` : h.rule;
+}
+
+const unavailable = (file) => ({ file, rule: 'yara-unavailable', line: 0, severity: 'warn' });
+const yaraHit = (file, m) => ({ file, rule: `yara:${m.rule}`, author: m.author, line: 0, severity: 'critical' });
+
+/** YARA over whole files: a critical hit per match, or one yara-unavailable hold (labelled `where`) when the rules can't run. */
+function yaraFiles(files, rel, where) {
+  if (!files.length) return [];
+  const r = yara.scan({ files });
+  if (r.error) return [unavailable(where)];
+  return r.files.flatMap((ms, i) => ms.map((m) => yaraHit(rel(files[i]), m)));
+}
+
+/** YARA over text, one buffer per file: [{file, text}] -> critical hits, or a yara-unavailable hold per file. */
+function yaraBuffers(items) {
+  if (!items.length) return [];
+  const r = yara.scan({ buffers: items.map((b) => b.text) });
+  if (r.error) return items.map((b) => unavailable(b.file));
+  return r.buffers.flatMap((ms, i) => ms.map((m) => yaraHit(items[i].file, m)));
+}
+
 /** The added side of a unified diff (what a patch would introduce). */
 function addedLines(diff) {
   return String(diff).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)).join('\n');
@@ -63,16 +92,20 @@ function addedLines(diff) {
  * @returns {{file:string, rule:string, line:number, severity:string}[]} file paths relative to `base`
  */
 function scanPath(target, base = target, attack = false) {
+  const rel = (f) => path.relative(base, f) || path.basename(f);
+  const files = scannedFiles(target);
+  const hits = files.flatMap((f) => scanText(fs.readFileSync(f, 'utf8'), f, attack).map((h) => ({ file: rel(f), ...h })));
+  return [...hits, ...yaraFiles(files, rel, rel(target))];
+}
+
+/** The files under target the scanner reads (no symlinks). */
+function scannedFiles(target) {
   if (!fs.existsSync(target)) return [];
   const st = fs.lstatSync(target);
   if (st.isSymbolicLink()) return [];
-  if (st.isDirectory()) {
-    return fs.readdirSync(target).flatMap((n) => scanPath(path.join(target, n), base, attack));
-  }
+  if (st.isDirectory()) return fs.readdirSync(target).flatMap((n) => scannedFiles(path.join(target, n)));
   // shortcut: files over 2 MB are skipped (minified bundles); upgrade if attackers hide there.
-  if (!SCANNED_EXT.test(target) || st.size > 2 * 1024 * 1024) return [];
-  const rel = path.relative(base, target) || path.basename(target);
-  return scanText(fs.readFileSync(target, 'utf8'), target, attack).map((h) => ({ file: rel, ...h }));
+  return SCANNED_EXT.test(target) && st.size <= 2 * 1024 * 1024 ? [target] : [];
 }
 
 /** Scan only what a unified-diff patch file adds, per file (the published side has provenance). */
@@ -135,6 +168,7 @@ function normalize(text) {
 function assessDiff(diff) {
   const critical = [];
   const holds = [];
+  const toYara = []; // [{file, text}] for the YARA pass, oversized lines included
   for (const chunk of String(diff).split(/^(?=diff --git )/m)) {
     if (!/^diff --git /.test(chunk)) continue;
     // The name from the +++ line (--- for a deletion): whole rest of line, so spaces survive.
@@ -161,6 +195,7 @@ function assessDiff(diff) {
       hold('oversized-line', i + 1);
       return '';
     });
+    toYara.push({ file, text: lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)).join('\n') });
     const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1));
 
     // Every rule, on every text type: a delta is too small for the PHP-only noise filter to matter.
@@ -178,6 +213,7 @@ function assessDiff(diff) {
     for (const [rule, re] of RULES) if (re.test(joined) && !seen.has(rule)) hold(rule);
     removed.forEach((l, i) => { if (AUTH_CHECK_RE.test(l)) hold('removes-auth-check', i + 1); });
   }
+  for (const h of yaraBuffers(toYara.filter((a) => a.text))) (h.severity === 'critical' ? critical : holds).push(h);
   return { critical, holds };
 }
 
@@ -189,4 +225,4 @@ function hasShebang(file) {
   } catch { return false; }
 }
 
-module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, hasShebang, RULES };
+module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, hasShebang, yaraFiles, describe, RULES };

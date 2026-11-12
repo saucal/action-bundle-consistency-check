@@ -4,7 +4,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { scanText, addedLines, scanPatch } = require('../lib/suspicious');
+const { scanText, addedLines, scanPatch, scanPath, describe } = require('../lib/suspicious');
+const yara = require('../lib/yara');
+const { TEXTBOOK, stub } = require('./helpers/yara-stub');
 
 const rules = (text) => scanText(text).map((h) => h.rule);
 
@@ -231,4 +233,29 @@ test('assessDiff: a line over 10 KB is held as oversized-line without running th
   const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', 'x'.repeat(20000)] }));
   assert.deepStrictEqual(r.holds, [{ file: 'plugins/x/x.php', rule: 'oversized-line', line: 2 }]);
   assert.deepStrictEqual(fastHolds('just under', [' '.repeat(10240)]), []);
+});
+
+// --- the critical tier: signature-base's YARA rules (stubbed here; see yara.test.js for the real run) ---
+test('YARA: a match on added text or a whole file is critical and named with its author', () => {
+  const h = assessDiff(diffOf('plugins/x/x.php', { add: ['<?php', TEXTBOOK] })).critical.find((x) => x.rule.startsWith('yara:'));
+  assert.deepStrictEqual(h, { file: 'plugins/x/x.php', rule: 'yara:WEBSHELL_PHP_Generic_Eval', author: 'Arnim Rupp (https://github.com/ruppde)', line: 0, severity: 'critical' });
+  assert.strictEqual(describe(h), 'matched WEBSHELL_PHP_Generic_Eval (Arnim Rupp (https://github.com/ruppde), signature-base)');
+  assert.strictEqual(describe({ rule: 'stealth' }), 'stealth');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'yara-'));
+  fs.mkdirSync(path.join(d, 'p'));
+  fs.writeFileSync(path.join(d, 'p/a.php'), '<?php\n' + TEXTBOOK + '\n');
+  fs.writeFileSync(path.join(d, 'p/b.php'), '<?php echo 1;\n');
+  assert.deepStrictEqual(scanPath(path.join(d, 'p'), d).filter((x) => x.rule.startsWith('yara:')).map((x) => [x.file, x.rule]), [['p/a.php', 'yara:WEBSHELL_PHP_Generic_Eval']]);
+});
+
+test('YARA unavailable: fails closed as a yara-unavailable hold, never critical, never a pass', () => {
+  yara.setRunner(() => ({ error: "No module named 'yara'" }));
+  try {
+    const r = assessDiff(diffOf('plugins/x/x.php', { add: ["echo esc_html__( 'Buy now', 'x' );"] }));
+    assert.deepStrictEqual(r, { critical: [], holds: [{ file: 'plugins/x/x.php', rule: 'yara-unavailable', line: 0, severity: 'warn' }] });
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'yara-'));
+    fs.mkdirSync(path.join(d, 'p'));
+    for (const n of ['a.php', 'b.php']) fs.writeFileSync(path.join(d, 'p', n), '<?php echo 1;\n');
+    assert.deepStrictEqual(scanPath(path.join(d, 'p'), d), [{ file: 'p', rule: 'yara-unavailable', line: 0, severity: 'warn' }], 'one per root');
+  } finally { yara.setRunner(stub); }
 });

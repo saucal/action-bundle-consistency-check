@@ -8,6 +8,8 @@ const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, r
 const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
+const yara = require('./lib/yara');
+const { describe } = require('./lib/suspicious');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed, recorded } = require('./lib/undeployed');
@@ -341,6 +343,10 @@ async function routeTipPr(repo, num, logins) {
   };
   let isTracked = await trackedIn();
 
+  // The scanner's critical tier. Unavailable fails closed: every server-derived item is held as yara-unavailable.
+  const yaraDown = await yara.prepare({ fetch, dir: fs.mkdtempSync(path.join(env('RUNNER_TEMP', require('os').tmpdir()), 'yara-')), python: env('YARA_PYTHON', 'python3') });
+  if (yaraDown) core.warning(`YARA webshell rules unavailable (${yaraDown}): every item taken from the server is held for review as yara-unavailable.`);
+
   // 2. Classify + apply (composer add/bump + patches) via the orchestrator core.
   // SatisPress resolution goes through composer itself (`composer show`), reusing the SAME
   // auth.json action-composer-auth already configured earlier in this job — no separate
@@ -516,14 +522,16 @@ async function routeTipPr(repo, num, logins) {
   const warn = (security && security.warn) || [];
   core.setOutput('suspicious', crit.length ? 'true' : 'false');
   if (crit.length || warn.length) {
-    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${h.rule}${h.notInPr ? ' (not in this PR, still on the server)' : ''}`; // line 0: the whole file
+    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${describe(h)}${h.notInPr ? ' (not in this PR, still on the server)' : ''}`; // line 0: the whole file
     const sec = [];
     if (crit.length) {
       sec.push('## 🚨 Security review required — not auto-merged', '',
         'Content taken from the server (with no registry version behind it) carries signals of compromised code. ' +
         'Treat this as a possible security incident: review these files on the server before merging anything.', '',
         ...crit.map(line), '');
-      core.setOutput('security-summary', [...new Set(crit.map((h) => `${h.file} (${h.rule})`))].slice(0, 10).join(', '));
+      const byFile = new Map();
+      for (const h of crit) byFile.set(h.file, new Set([...(byFile.get(h.file) || []), describe(h)]));
+      core.setOutput('security-summary', [...byFile].slice(0, 10).map(([f, d]) => `${f} (${[...d].join('; ')})`).join(', '));
       core.error(`Compromise signals in server-derived content: ${crit.length} critical finding(s). Not merging.`);
     }
     if (warn.length) sec.push('<details><summary>Reviewer notes: ' + warn.length + ' lower-severity signal(s)</summary>', '', ...warn.map(line), '', '</details>', '');
