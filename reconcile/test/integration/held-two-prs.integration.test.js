@@ -36,6 +36,11 @@ const plug = (dir, slug, ret) => {
 };
 const tipLists = [['selfheal-undeployed-main&state=(open|closed)&per_page', '[]']];
 // The current cycle's merge m: the base holds it (any compare from m), main and the record (`settled`) don't.
+// Invariant 3: one base-head read and one merged-PR listing per run, shared by every base decision.
+const oneRead = (res) => {
+  assert.strictEqual(res.calls.filter((c) => /git\/ref\/heads\/selfheal-base-main -q/.test(c)).length, 1, res.why);
+  assert.ok(res.calls.filter((c) => /pulls\?base=selfheal-base-main&state=closed/.test(c)).length <= 1, res.why);
+};
 const cycle = (m, ...settled) => [[`compare/${m}\\.\\.\\.(main|${settled.join('|')}) `, 'diverged'], [`compare/${m}\\.\\.\\.`, 'ahead']];
 
 /** index.js against ws's fake gh: run(n, rules, extra env) -> { r, calls, outputs, why }. */
@@ -358,6 +363,7 @@ test('invariants 1, 2 and 5: a run whose PR targets selfheal-base-main never aut
     assert.strictEqual(two.outputs['auto-merge'], 'false', two.why);
     assert.strictEqual(two.outputs['build-sha'] || '', '', two.why);
     assert.strictEqual(two.outputs.pr, '14', two.why);
+    oneRead(two);
     const r2 = G(origin, 'rev-parse', 'reconciliation-main');
     assert.strictEqual(two.outputs['head-sha'], r2, two.why);
     assert.strictEqual(G(origin, 'rev-parse', `${r2}^`), D);
@@ -432,6 +438,7 @@ test('invariants 2 and 3: an earlier cycle\'s merged PR 1 under the reused base 
     // Held (merge off): reviewState 'none' on the stale base at D2: fast-forwarded to D3, PR 1 #20 kept going.
     const held = runner({ ws, proj, server, merge: '0' })('held', old(merged12));
     quiet12(held);
+    oneRead(held);
     assert.ok(held.calls.some((c) => new RegExp(`PATCH repos/o/r/git/refs/heads/selfheal-base-main -f sha=${D3} -F force=false`).test(c)), held.why);
     assert.ok(held.calls.some((c) => /PATCH repos\/o\/r\/pulls\/20 .* -f base=selfheal-base-main$/.test(c)), held.why);
     assert.ok(!delBase(held) && !held.calls.some((c) => /pr create/.test(c)), held.why);
@@ -443,6 +450,7 @@ test('invariants 2 and 3: an earlier cycle\'s merged PR 1 under the reused base 
     for (const [n, closed] of [['eng', merged12], ['eng-none', '']]) {
       const res = eng(n, [...old(closed), ['pr create', 'https://github.test/o/r/pull/21']]);
       quiet12(res);
+      oneRead(res);
       assert.ok(res.calls.some((c) => /pr create -R o\/r --head selfheal-undeployed-main --base main /.test(c)), res.why);
       assert.strictEqual(res.outputs['auto-merge'], 'true', res.why);
       assert.match(res.outputs['build-sha'] || '', /^[0-9a-f]{40}$/, res.why);
