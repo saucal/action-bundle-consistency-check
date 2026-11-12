@@ -429,6 +429,11 @@ async function routeTipPr(repo, num, logins) {
   const resolvers = makeResolvers({ fetch, runner, cwd });
   // SAUCAL_CONSISTENCY_RECONCILE_MERGE=0: a human merges, so one PR carries everything (no split).
   const autoMergeOn = env('RECONCILE_MERGE', '1') !== '0';
+  // G65: selfheal-base-{ref} off the deployed commit may hold a reviewer's merge m1 not recorded yet. Then
+  // nothing splits or merges unattended past it: the held path judges it (reviewState) and takes it, or
+  // rejects it on PR 1 with a comment before the base goes. An unanswered ls-remote counts as held (fail closed).
+  const lsBase = pending && !inPlace ? await sh('git', ['ls-remote', '--heads', 'origin', `refs/heads/${baseBranchOf(ref)}`], { cwd, silent: true }) : null;
+  const baseHeld = !!lsBase && (lsBase.code !== 0 || !['', pending.since].includes(lsBase.out.trim().split(/\s/)[0] || ''));
   let result;
   let tipResult = null; // undeployed commits: run A (the tip) — `result` is then run B (the deployed commit)
   let tipTree = '';
@@ -440,7 +445,7 @@ async function routeTipPr(repo, num, logins) {
     // Mixed heal (see splitHeal): merge the part that needs no review now, defer the rest — or, when the
     // tip already carries that part, heal everything in one held PR. Start again from the clean branch
     // tip, undoing only what a run wrote (tracked files, the patch dir, copied paths) — not what Prepare injected.
-    if (autoMergeOn && !result.autoMerge.ok && result.autoMerge.eligible.length) {
+    if (autoMergeOn && !baseHeld && !result.autoMerge.ok && result.autoMerge.eligible.length) {
       // Ask git first: an item it refuses is in no commit, so no later run can open a PR for it either.
       const before = result.classified.filter((c) => c.recoverable);
       await stageOutputs(cwd, result, isTracked, (args) => sh('git', args, { cwd }));
@@ -577,7 +582,7 @@ async function routeTipPr(repo, num, logins) {
   // undeployed tip goes to its engineers in a PR (tipNote, below). Held (owner, 2026-11-10, G65): PR 1
   // reviews the heal alone, into selfheal-base-{ref}; once merged, its merge m1 is the heal recorded
   // here and the engineers' PR follows, exactly as unattended. Never on compromise signals (no verify).
-  let toEngineers = !!(tipResult && autoMergeOn && autoMerge && autoMerge.ok);
+  let toEngineers = !!(tipResult && autoMergeOn && autoMerge && autoMerge.ok && !baseHeld);
   const review = tipResult && !toEngineers && !inPlace && staged.length
     ? await reviewState(repo, ref, cwd, pending.since, await must(['write-tree'], cwd), !!((security && security.critical) || []).length) : null;
   const reviewed = review && review.state === 'ok' ? review : null;
