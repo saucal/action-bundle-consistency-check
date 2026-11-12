@@ -62,7 +62,10 @@ const runner = ({ ws, proj, server, merge }) => {
     env.GITHUB_STEP_SUMMARY = path.join(ws, `summary-${n}`); fs.writeFileSync(env.GITHUB_STEP_SUMMARY, '');
     delete env.SAPP_SERVER;
     Object.assign(env, extra);
-    const r = spawnSync(process.execPath, [path.join(__dirname, '..', '..', 'index.js')], { env, encoding: 'utf8' });
+    // The YARA tier's test stub (test/helpers/yara-stub.js), when present, must reach the child run too.
+    const stub = path.join(__dirname, '..', 'helpers', 'yara-stub.js');
+    const pre = fs.existsSync(stub) ? ['--require', stub] : [];
+    const r = spawnSync(process.execPath, [...pre, path.join(__dirname, '..', '..', 'index.js')], { env, encoding: 'utf8' });
     const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).join(' ')) : [];
     const outputs = {};
     for (const m of fs.readFileSync(out, 'utf8').matchAll(/^([\w-]+)<<(\S+)\n([\s\S]*?)\n\2$/gm)) outputs[m[1]] = m[3];
