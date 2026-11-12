@@ -199,3 +199,18 @@ test('scanText attack mode: decode/eval/chr-chain signatures as warn on PHP, raw
   assert.ok(hits.every((h) => h.severity === 'warn'));
   assert.deepStrictEqual(scanText("const s = atob('aGk=');", 'app.js', true), [], 'PHP files only');
 });
+
+// --- server-written text must not stall the check (a stalled job never reaches its failure/Slack steps) ---
+const fastHolds = (label, add) => {
+  const t = Date.now();
+  const r = assessDiff(diffOf('plugins/x/x.php', { add }));
+  const ms = Date.now() - t;
+  assert.ok(ms < 500, `${label}: ${ms} ms`);
+  return r.holds.map((h) => h.rule);
+};
+
+test('assessDiff: a callback call padded with whitespace scans in linear time', () => {
+  // ~100 KB as lines just under the oversized cap, so the dynamic-callback regex itself is timed.
+  fastHolds('array_filter + spaces', Array(10).fill(`$r = array_filter(${' '.repeat(9900)}$a);`));
+  assert.ok(fastHolds('padded, comma', [`array_filter(${' '.repeat(50)}$a, $cb);`]).includes('dynamic-callback'));
+});

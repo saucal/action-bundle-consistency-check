@@ -95,7 +95,7 @@ const DELTA_RULES = [
   // Request data reaching new code is how a callback or variable-function shell gets its command.
   ['request-data', /\$_(?:GET|POST|REQUEST|COOKIE|FILES|ENV)\b|\$_SERVER\s*\[|\b(?:getallheaders|apache_request_headers|filter_input(?:_array)?)\s*\(/i],
   // A callback that is a variable or a call's result (not a literal name or a closure) runs whatever it is handed.
-  ['dynamic-callback', new RegExp(String.raw`\b(?:(?:call_user_func(?:_array)?|forward_static_call(?:_array)?|array_map|register_shutdown_function|register_tick_function|spl_autoload_register)\s*\(|(?:array_filter|array_walk(?:_recursive)?|array_reduce|u[ak]?sort|preg_replace_callback|iterator_apply)\s*\(\s*(?:[^,()]|\([^()]*\))*,)\s*(?!(?:function|fn|static\s*(?:function|fn)|array)\s*\()(?:\$|[A-Za-z_\\][\w\\]*\s*\()`, 'i')],
+  ['dynamic-callback', new RegExp(String.raw`\b(?:(?:call_user_func(?:_array)?|forward_static_call(?:_array)?|array_map|register_shutdown_function|register_tick_function|spl_autoload_register)\s*\(|(?:array_filter|array_walk(?:_recursive)?|array_reduce|u[ak]?sort|preg_replace_callback|iterator_apply)\s*\((?:[^,()]|\([^()]*\))*,)\s*(?!(?:function|fn|static\s*(?:function|fn)|array)\s*\()(?:\$|[A-Za-z_\\][\w\\]*\s*\()`, 'i')],
   ['remote-fetch', /\b(?:wp_(?:safe_)?remote_(?:get|post|request)|download_url|curl_exec|fsockopen)\s*\(|\b(?:file_get_contents|fopen)\s*\(\s*["']https?:/i],
   ['writes-file', /\b(?:file_put_contents|fwrite|fputs)\s*\(/i],
   // Markup a hotfix rarely adds and a skimmer always does: script/iframe tags, external URLs.
