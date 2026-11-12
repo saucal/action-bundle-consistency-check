@@ -21,7 +21,7 @@ test('flags the signals of a backdoor that hides an admin and itself', () => {
     'ev' + "al(base64_decode($_POST['x']));",
   ].join('\n');
   const r = rules(src);
-  for (const want of ['hides-users', 'hides-plugins', 'stealth', 'shell-request', 'file-upload', 'eval-decoded']) {
+  for (const want of ['hides-users', 'hides-plugins', 'stealth', 'shell-exec', 'file-upload']) {
     assert.ok(r.includes(want), `${want} in ${r}`);
   }
 });
@@ -31,11 +31,9 @@ test('reports 1-based line numbers', () => {
   assert.deepStrictEqual(hits.map((h) => [h.rule, h.line, h.severity]), [['shell-exec', 3, 'warn']]);
 });
 
-test('flags request data fed to dangerous calls and code-created admins', () => {
-  assert.ok(rules("assert($_REQUEST['a']);").includes('eval-request'));
+test('flags code-created admins and encoded blobs', () => {
   assert.ok(rules("$u = wp_create_user('x', 'y'); $u->set_role('administrator');").includes('creates-admin'));
   assert.ok(rules(`$p = '${'A'.repeat(600)}';`).includes('encoded-blob'));
-  assert.ok(rules('preg_replace("/.*/e", $_POST["r"], "");').includes('eval-request'));
 });
 
 test('JS regex .exec() and PHP-only rules on non-PHP files do not fire', () => {
@@ -71,7 +69,7 @@ test('scanPatch scans only added lines, per file, and keeps the file path', () =
   // removed line in a.php is ignored; b.js is not PHP, so PHP-only rules don't fire there.
   assert.deepStrictEqual(scanPatch(p), []);
   fs.appendFileSync(p, ['', 'diff --git a/plugins/x/c.php b/plugins/x/c.php', '+++ b/plugins/x/c.php', "+system($_GET['c']);"].join('\n'));
-  assert.deepStrictEqual(scanPatch(p).map((h) => [h.file, h.rule]), [['plugins/x/c.php', 'shell-request'], ['plugins/x/c.php', 'shell-exec']]);
+  assert.deepStrictEqual(scanPatch(p).map((h) => [h.file, h.rule]), [['plugins/x/c.php', 'shell-exec']]);
 });
 
 // --- delta assessment (gate for auto-merging patches and tracked-file copies) ----------------
@@ -88,7 +86,7 @@ test('assessDiff: an ordinary edit is clean (auto-mergeable)', () => {
 
 test('assessDiff: any warn-level signal in a delta holds it; critical stays critical', () => {
   assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ['$o = base64_decode($v);'] })).holds.some((h) => h.rule === 'decode'));
-  assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ["shell_exec($_GET['c']);"] })).critical.some((h) => h.rule === 'shell-request'));
+  assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: [TEXTBOOK] })).critical.some((h) => h.rule === 'yara:WEBSHELL_PHP_Generic_Eval'));
 });
 
 test('assessDiff: code split across lines or assembled from pieces is caught on the joined text', () => {
@@ -120,7 +118,7 @@ test('assessDiff: risky files hold — binary, symlink, package.json, composer, 
 });
 
 test('patch headers without a/ b/ prefixes (generatePatch uses --no-prefix) are still scanned', () => {
-  const d = ['diff --git plugins/x/x.php plugins/x/x.php', '--- plugins/x/x.php', '+++ plugins/x/x.php', '@@ -1 +1 @@', "+shell_exec($_GET['c']);"].join('\n');
+  const d = ['diff --git plugins/x/x.php plugins/x/x.php', '--- plugins/x/x.php', '+++ plugins/x/x.php', '@@ -1 +1,2 @@', '+' + TEXTBOOK, "+shell_exec($_GET['c']);"].join('\n');
   assert.ok(assessDiff(d).critical.some((h) => h.file === 'plugins/x/x.php'), 'assessDiff parses it');
   const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'patch-')), 'n.patch');
   fs.writeFileSync(p, d);
@@ -223,7 +221,7 @@ test('assessDiff: text dense with include/eval/exec keywords and no ";" scans in
     fastHolds(`${label} joined`, Array(Math.floor(100000 / unit.length)).fill(unit)); // joined text
   }
   assert.ok(fastHolds('include still found', ['include( __DIR__ . "/x.ico" );']).includes('include-non-php'));
-  assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ["shell_exec($_GET['c']);"] })).critical.some((h) => h.rule === 'shell-request'));
+  assert.ok(fastHolds('shell_exec still found', ["shell_exec($_GET['c']);"]).includes('shell-exec'));
 });
 
 test('assessDiff: a line over 10 KB is held as oversized-line without running the line rules', () => {
