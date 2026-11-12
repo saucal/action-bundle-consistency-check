@@ -305,6 +305,86 @@ test('ADV-I1: new eligible drift after PR 1 merged never splits past m1: the bas
   }
 });
 
+test('invariants 1, 2 and 5: a run whose PR targets selfheal-base-main never auto-merges, even when every item could', () => {
+  const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-crit-'));
+  try {
+    fs.writeFileSync(path.join(proj, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n!plugins/customx/\n!plugins/heldx/\n');
+    plug(proj, 'customx', '1'); plug(proj, 'heldx', '1');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site\n');
+    G(proj, 'init', '-q', '-b', 'main'); G(proj, 'add', '-A'); G(proj, 'commit', '-qm', 'D');
+    const D = G(proj, 'rev-parse', 'HEAD');
+    const origin = path.join(ws, 'origin.git');
+    G(ws, 'init', '-q', '--bare', origin);
+    G(proj, 'remote', 'add', 'origin', origin); G(proj, 'push', '-q', 'origin', 'main');
+    const server = stageServer(proj, (sv) => plug(sv, 'heldx', "'https://example.com'"));
+    const drift = () => {
+      const d = deriveDrift(proj, server);
+      fs.writeFileSync(path.join(ws, 'manifest.txt'), d.manifestText);
+      fs.writeFileSync(path.join(ws, 'diff.txt'), d.contentDiffText);
+    };
+    drift();
+    G(server, 'init', '-q'); G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${D}`);
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site, by an engineer\n');
+    G(proj, 'commit', '-qam', 'u1'); G(proj, 'push', '-q', 'origin', 'main');
+    const U = G(proj, 'rev-parse', 'HEAD');
+    G(proj, 'checkout', '-q', D);
+    const run = runner({ ws, proj, server, merge: '1' });
+
+    // Phase 1: heldx held -> PR 1 #12; the reviewer merges it (m1).
+    const one = run(1, [...tipLists, ['pr create', 'https://github.test/o/r/pull/12']]);
+    assert.ok(one.calls.some((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c)), one.why);
+    const r1 = G(origin, 'rev-parse', 'reconciliation-main');
+    G(origin, 'branch', 'selfheal-base-main', D);
+    const tmp = path.join(ws, 'review');
+    G(ws, 'clone', '-q', '-b', 'selfheal-base-main', origin, tmp);
+    G(tmp, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', 'origin/reconciliation-main');
+    G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1 = G(origin, 'rev-parse', 'selfheal-base-main');
+    // Then the server puts heldx back to D's version and customx drifts: the remaining drift is all eligible.
+    plug(server, 'heldx', '1'); plug(server, 'customx', '2');
+    G(proj, 'checkout', '-q', '-f', D);
+    drift();
+    const held = [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1],
+      ['pulls\\?base=selfheal-base-main&state=closed', JSON.stringify({ number: 12, head: r1, merge: m1 })]];
+
+    // Run 2 (CRIT-1): m1 rejected (the server no longer runs it); a new PR 1 #14, held, nothing into main unattended.
+    const two = run(2, [...held, ['PATCH repos/o/r/git/refs/heads/selfheal-base-main', 'not a fast forward', 1], ['pr create', 'https://github.test/o/r/pull/14']]);
+    assert.ok(two.calls.some((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c)), two.why);
+    assert.strictEqual(two.outputs['auto-merge'], 'false', two.why);
+    assert.strictEqual(two.outputs['build-sha'] || '', '', two.why);
+    assert.strictEqual(two.outputs.pr, '14', two.why);
+    const r2 = G(origin, 'rev-parse', 'reconciliation-main');
+    assert.strictEqual(two.outputs['head-sha'], r2, two.why);
+    assert.strictEqual(G(origin, 'rev-parse', `${r2}^`), D);
+    assert.strictEqual(G(origin, 'diff', '--name-only', D, r2), 'plugins/customx/customx.php');
+    assert.strictEqual(G(origin, 'rev-parse', 'main'), U, 'main untouched');
+    assert.ok(!two.calls.some((c) => /selfheal-undeployed-main --base|force=true/.test(c)), two.why);
+    const body = fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8');
+    assert.doesNotMatch(body, /Auto-merge:\*\* eligible/);
+    assert.match(body, /\*\*Auto-merge:\*\* held for a human:\n\n- `selfheal-base-main` holds PR #12's merge, not accepted as the reviewed heal \(the server changed since the review: it no longer runs this heal\): this heal is reviewed again/);
+    // Invariant 5: traced on PR 1.
+    assert.ok(two.calls.some((c) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; a new PR #14 asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(c)), two.why);
+
+    // Invariant 2, fail closed: GitHub can't read the base, or can't list its merged PRs: held, stopped with a
+    // warning, nothing pushed, created or deleted, never auto-merge.
+    for (const [n, rules] of [['3a', [...tipLists, ['git/ref/heads/selfheal-base-main', 'HTTP 502', 1]]],
+      ['3b', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=closed', 'HTTP 502', 1]]]]) {
+      const before = G(origin, 'rev-parse', 'reconciliation-main');
+      const three = run(n, rules);
+      assert.strictEqual(three.outputs['auto-merge'], 'false', three.why);
+      assert.ok(!three.outputs['build-sha'] && !three.outputs['undeployed-pr'], three.why);
+      assert.doesNotMatch(three.r.stdout, /Mixed heal/, three.why);
+      assert.match(three.r.stdout, /selfheal-base-main.*could not be judged this run/, three.why);
+      assert.ok(!three.calls.some((c) => /pr create|-X DELETE .*selfheal-base|git\/refs -f ref=|PATCH repos\/o\/r\/git\/refs/.test(c)), three.why);
+      assert.strictEqual(G(origin, 'rev-parse', 'reconciliation-main'), before);
+    }
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test('invariants 2 and 3: an earlier cycle\'s merged PR 1 under the reused base name is settled, never judged or told', () => {
   const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-cycle-'));

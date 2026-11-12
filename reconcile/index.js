@@ -641,6 +641,8 @@ async function routeTipPr(repo, num, logins) {
     core.info(`PR #${reviewed.number} merged the reviewed heal as ${reviewed.m1.slice(0, 7)}: recording it, and the undeployed commits go to their engineers.`);
   }
   const heldTwo = !!(tipResult && !toEngineers); // PR 1: the heal on D into selfheal-base-{ref}
+  // G65: PR 1 never merges unattended, even when every item could (its base holds a merge that was not taken).
+  const auto = !heldTwo && autoMergeOn && !!(autoMerge && autoMerge.ok);
   // One PR per ref: drift that needs review can't join the engineers' PR (merging it deploys), and no
   // second PR opens while it waits. The mixed heal's eligible part joins; the rest waits for its merge.
   if (inPlace && (!toEngineers || !staged.length)) {
@@ -676,7 +678,7 @@ async function routeTipPr(repo, num, logins) {
   }
 
   // A reviewed heal (G65) is verified and recorded like an unattended one; nothing merges into {ref} either way.
-  core.setOutput('auto-merge', toEngineers || (autoMergeOn && autoMerge && autoMerge.ok) ? 'true' : 'false');
+  core.setOutput('auto-merge', toEngineers || auto ? 'true' : 'false');
   // Paths the checks must not count this time (deferred, flagged or junk drift), as anchored rsync rules.
   // Auto-merge off: what this run leaves alone (the recovery path's verify still runs then).
   // Reviewed: what this run's heal on D leaves on the server, i.e. what PR 1 left (its tree is this heal's).
@@ -684,17 +686,23 @@ async function routeTipPr(repo, num, logins) {
   // Drift the PR leaves alone is listed once, under "Repo changes this PR can't make".
   // A "needs a human" reason is dropped only when the body lists every item it names, so a hold always shows why.
   const cantMake = new Set(classified.filter((c) => !c.recoverable && c.category !== 'ignorable').map((c) => `${c.key} (${c.category})`));
-  const reasonLines = ((autoMerge && autoMerge.reasons) || [])
-    .filter((r) => !r.startsWith('needs a human: ') || !r.slice('needs a human: '.length).split(', ').every((k) => cantMake.has(k))).map((r) => `- ${r}`).join('\n');
+  const reasons = ((autoMerge && autoMerge.reasons) || [])
+    .filter((r) => !r.startsWith('needs a human: ') || !r.slice('needs a human: '.length).split(', ').every((k) => cantMake.has(k)));
+  if (heldTwo && autoMergeOn && autoMerge && autoMerge.ok) {
+    reasons.push(review && review.state === 'rejected'
+      ? `\`${baseBranchOf(ref)}\` holds PR #${review.number}'s merge, not accepted as the reviewed heal (${review.why}): this heal is reviewed again`
+      : `\`${baseBranchOf(ref)}\` holds a merge this run could not judge: this heal waits for a review`);
+  }
+  const reasonLines = reasons.map((r) => `- ${r}`).join('\n');
   body = (toEngineers
     ? '**Self-heal:** recorded as deployed only if a build of the heal reproduces the server exactly; this PR itself is never merged automatically.\n\n'
     : !autoMergeOn
       ? `**Auto-merge:** off for this repo (\`SAUCAL_CONSISTENCY_RECONCILE_MERGE=0\`) — review and merge by hand. Merging only changes the repo: nothing is deployed.${reasonLines ? `\n\nNeeds attention:\n${reasonLines}` : ''}\n\n`
-      : autoMerge && autoMerge.ok
+      : auto
         ? '**Auto-merge:** eligible — merged only if a build of this branch reproduces the server exactly.\n\n'
         : heldNote(reasonLines)) + body;
   // Read back by the next run that rewrites the PR (pr-trace).
-  const state = prState(classified, { auto: autoMergeOn && !!(autoMerge && autoMerge.ok),
+  const state = prState(classified, { auto,
     reasons: autoMergeOn ? (autoMerge && autoMerge.reasons) || [] : ['auto-merge is off for this repo'] });
   // Joined in place: the PR still carries the earlier heals' items (the body below shows this heal's).
   const earlier = inPlace ? ((readState(inPlace.body) || {}).items || []).filter((k) => !state.items.includes(k)) : [];
@@ -741,11 +749,11 @@ async function routeTipPr(repo, num, logins) {
   // push-triggered Deploy finds it through the PR and reads its message: [commit only] = build it, require a
   // zero-change dry run, commit the build, never rsync; Self-heal-pending = paths left for review.
   // Merged by hand, the PR carries everything it applies: only what it leaves alone is pending.
-  const pendingLines = ((autoMerge && pendingOnMerge(autoMergeOn, autoMerge)) || []).map((p) => `Self-heal-pending: ${p}`);
+  const pendingLines = ((autoMerge && pendingOnMerge(autoMergeOn && !heldTwo, autoMerge)) || []).map((p) => `Self-heal-pending: ${p}`);
   const committed = await sh('git', ['commit', '-m', tipResult
     ? [`Reconcile server drift on ${ref} [commit only]`, '', `Parity with the server: the last deployed commit (${pending.since.slice(0, 7)}) plus the server's changes.`,
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')
-    : [`Reconcile server drift on ${ref} [commit only]`, '', healCommitLine(autoMergeOn && autoMerge && autoMerge.ok),
+    : [`Reconcile server drift on ${ref} [commit only]`, '', healCommitLine(auto),
       ...(pendingLines.length ? ['', ...pendingLines] : [])].join('\n')], { cwd });
   if (committed.code !== 0) { core.setFailed(`git commit failed:\n${committed.out}`); return; }
   let headSha = (await sh('git', ['rev-parse', 'HEAD'], { cwd })).out.trim();
