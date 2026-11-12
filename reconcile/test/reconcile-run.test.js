@@ -457,6 +457,19 @@ test('tracked: an edit to an existing committed file with no risky signal merges
   assert.ok(res.autoMerge.ok, res.autoMerge.reasons.join(' | '));
 });
 
+test('tracked: an edit far below the shebang of an extensionless script still waits for review', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  const head = '#!/usr/bin/env node\n' + 'const a = 1;\n'.repeat(10);
+  for (const dir of [sourceDir, treeRoot]) fs.mkdirSync(path.join(dir, 'themes/t/bin'), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'themes/t/bin/build'), head + 'run();\n');
+  fs.writeFileSync(path.join(treeRoot, 'themes/t/bin/build'), head + 'run(1);\n');
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: 'themes/t/bin/build\n', isTracked: trackedIn(['themes/t/bin/build']),
+    resolvers: noResolve, runner: fakeRunner() });
+  assert.strictEqual(res.autoMerge.ok, false);
+  assert.ok(res.autoMerge.reasons.some((r) => /script-file/.test(r)), res.autoMerge.reasons.join(' | '));
+});
+
 test('tracked: compromise signals -> nothing copied, held, no auto-merge', async () => {
   const f = trackedFixture("<?php // v1\n" + 'ev' + "al(base64_decode($_POST['x']));\n");
   const res = await reconcileRun({ ...f, resolvers: noResolve, runner: fakeRunner() });

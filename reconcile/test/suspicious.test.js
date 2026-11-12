@@ -141,6 +141,24 @@ test('assessDiff: deltas to build-executable files hold (scripts and package-man
   assert.deepStrictEqual(rules('plugins/x/style.css'), []);
 });
 
+test('assessDiff: TypeScript module configs and extensionless shebang scripts are script files too', () => {
+  const rules = (file, body = ['+x = 1;'], hunk = '@@ -1 +1 @@') => assessDiff([`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, hunk, ...body].join('\n')).holds.map((h) => h.rule);
+  for (const f of ['themes/t/vite.config.mts', 'themes/t/postcss.config.cts', 'themes/t/build.coffee']) assert.ok(rules(f).includes('script-file'), f);
+  assert.ok(rules('themes/t/bin/build', [' #!/usr/bin/env node', '+require("x");'], '@@ -1,2 +1,2 @@').includes('script-file'), 'shebang as context');
+  assert.ok(rules('themes/t/bin/build', ['+#!/bin/sh', '+id'], '@@ -0,0 +1,2 @@').includes('script-file'), 'shebang added');
+  assert.deepStrictEqual(rules('themes/t/notes', [' #!/not/line/one', '+x'], '@@ -5,2 +5,2 @@'), [], 'only line 1 is a shebang');
+  assert.deepStrictEqual(rules('themes/t/README'), []);
+});
+
+test('hasShebang: true only for a file starting with #!', () => {
+  const { hasShebang } = require('../lib/suspicious');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'shebang-'));
+  fs.writeFileSync(path.join(d, 'build'), '#!/usr/bin/env node\nrequire("x");\n');
+  fs.writeFileSync(path.join(d, 'notes'), 'see #!\n');
+  fs.writeFileSync(path.join(d, 'one'), '#');
+  assert.deepStrictEqual(['build', 'notes', 'one', 'missing'].map((n) => hasShebang(path.join(d, n))), [true, false, false, false]);
+});
+
 test('assessDiff: risky shapes hold even when no other rule fires (new files, must-use plugins, script tags, external URLs)', () => {
   const rules = (file, add, isNew) => assessDiff((isNew ? `diff --git ${file} ${file}\nnew file mode 100644\n--- /dev/null\n+++ ${file}\n` : `diff --git ${file} ${file}\n--- ${file}\n+++ ${file}\n`)
     + `@@ -1,1 +1,2 @@\n <?php\n` + add.map((l) => `+${l}`).join('\n') + '\n').holds.map((h) => h.rule);

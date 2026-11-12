@@ -110,7 +110,9 @@ const AUTH_CHECK_RE = /\b(?:current_user_can|wp_verify_nonce|check_admin_referer
 const RISKY_FILE_RE = /(?:^|\/)(?:package\.json|composer\.(?:json|lock)|\.htaccess|\.user\.ini|php\.ini|\.npmrc|\.pnpmfile\.cjs|pnpm-workspace\.yaml|\.yarnrc(?:\.yml)?)$|\.phar$/i;
 // Verify and Deploy build with every secret, and pnpm/npm run scripts found in the tree: a delta to
 // anything the toolchain can execute waits for a human. (On a store, JS is also the skimmer vector.)
-const SCRIPT_FILE_RE = /\.(?:[cm]?js|jsx|tsx?|sh|bash)$/i;
+const SCRIPT_FILE_RE = /\.(?:[cm]?js|jsx|[cm]?tsx?|sh|bash|coffee)$/i;
+// An extensionless script (bin/build) is known by its shebang: a hunk at line 1 that shows one.
+const SHEBANG_HUNK_RE = /^@@ -\d+(?:,\d+)? \+1(?:,\d+)? @@.*\n[ +]#!/m;
 const PHP_FILE_RE = /\.(?:php\d?|phtml|inc|module)$/i;
 
 /** Join the added text and strip comments/whitespace, so split or spaced-out code reads as one. */
@@ -141,7 +143,7 @@ function assessDiff(diff) {
     if (/^Binary files /m.test(chunk) || /^GIT binary patch/m.test(chunk)) hold('binary');
     if (/^(?:new file mode|new mode) 120000/m.test(chunk)) hold('symlink');
     if (RISKY_FILE_RE.test(file)) hold('risky-file');
-    if (SCRIPT_FILE_RE.test(file)) hold('script-file');
+    if (SCRIPT_FILE_RE.test(file) || SHEBANG_HUNK_RE.test(chunk)) hold('script-file');
     // A file the server added (not an edit to one the repo already has): where a dropped backdoor shows up.
     if (/^new file mode /m.test(chunk) || /^--- \/dev\/null$/m.test(chunk)) hold('new-file');
     if (MU_PLUGINS_RE.test(file)) hold('must-use-plugin');
@@ -167,4 +169,12 @@ function assessDiff(diff) {
   return { critical, holds };
 }
 
-module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, RULES };
+/** True when the file starts with `#!`: a script whatever its name (the diff may not show line 1). */
+function hasShebang(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try { const b = Buffer.alloc(2); return fs.readSync(fd, b, 0, 2, 0) === 2 && b.toString() === '#!'; } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
+module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, hasShebang, RULES };
