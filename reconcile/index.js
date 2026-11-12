@@ -841,7 +841,7 @@ async function routeTipPr(repo, num, logins) {
     core.warning(`PR #${based.rejected.number}'s merge was not accepted as the reviewed heal: ${based.rejected.why}.`);
   }
   // One held PR into {ref} (no undeployed commits left): a selfheal-base-{ref} it was retargeted off goes.
-  if (prBranch === branch && !heldTwo) await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${baseBranchOf(ref)}`], { silent: true });
+  if (prBranch === branch && !heldTwo) await dropBase(repo, `no undeployed commits are left, so ${prNum ? `PR #${prNum}` : 'the reconciliation PR'} reviews the heal into \`${ref}\`.`);
   if (toEngineers && prNum) {
     await routeTipPr(repo, prNum, logins);
     if (reviewed) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${reviewed.number}/comments`, '-f', `body=The heal merged here (${reviewed.m1.slice(0, 7)}) is recorded as deployed once a build of it reproduces the server; the undeployed commits on \`${ref}\` went to the engineers in #${prNum}. \`selfheal-base-${ref}\` is deleted once that record lands. From the [consistency check run](${runUrl}).`], { silent: true });

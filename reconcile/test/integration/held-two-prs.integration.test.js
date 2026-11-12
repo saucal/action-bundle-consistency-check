@@ -226,11 +226,15 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     assert.ok(del(three.calls) >= 0 && del(three.calls) < three.calls.findIndex((c) => /pulls\?head=o:reconciliation-main&state=open/.test(c)), three.why);
 
     // Run 4 (M9): the undeployed commits are gone (the record is main's tip): the open held PR is retargeted to
-    // main, then selfheal-base-main is deleted.
+    // main, then selfheal-base-main is deleted. Invariant 4: an unrecorded merge it holds (an earlier PR 1, #11,
+    // whose m1 the record skipped) is told first.
     G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${U}`);
-    const four = run(4, [...tipLists, openPr1, ['git/ref/heads/selfheal-base-main', D]]);
+    const four = run(4, [...tipLists, openPr1, ['git/ref/heads/selfheal-base-main', m1], ...cycle(m1, U),
+      ['pulls\\?base=selfheal-base-main&state=closed', JSON.stringify({ number: 11, head: r1, merge: m1 })]]);
     const patch = four.calls.findIndex((c) => /PATCH repos\/o\/r\/pulls\/12 .* -f base=main$/.test(c));
     assert.ok(patch >= 0 && del(four.calls) > patch, four.why);
+    const told4 = four.calls.findIndex((c) => new RegExp(`issues/11/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not recorded as the reviewed heal: no undeployed commits are left, so PR #12 reviews the heal into \`main\`\\. \`selfheal-base-main\` is deleted\\.`).test(c));
+    assert.ok(told4 > patch && del(four.calls) > told4, four.why);
     assert.ok(create(four.calls) < 0, four.why);
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
