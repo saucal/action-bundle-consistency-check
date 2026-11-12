@@ -214,3 +214,12 @@ test('assessDiff: a callback call padded with whitespace scans in linear time', 
   fastHolds('array_filter + spaces', Array(10).fill(`$r = array_filter(${' '.repeat(9900)}$a);`));
   assert.ok(fastHolds('padded, comma', [`array_filter(${' '.repeat(50)}$a, $cb);`]).includes('dynamic-callback'));
 });
+
+test('assessDiff: text dense with include/eval/exec keywords and no ";" scans in linear time', () => {
+  for (const [label, unit] of [['include', 'include"a"'], ['eval', 'eval('], ['system', 'system('], ['preg_replace', 'preg_replace("/e",']]) {
+    fastHolds(`${label} lines`, Array(10).fill(unit.repeat(Math.floor(9900 / unit.length)))); // per line
+    fastHolds(`${label} joined`, Array(Math.floor(100000 / unit.length)).fill(unit)); // joined text
+  }
+  assert.ok(fastHolds('include still found', ['include( __DIR__ . "/x.ico" );']).includes('include-non-php'));
+  assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ["shell_exec($_GET['c']);"] })).critical.some((h) => h.rule === 'shell-request'));
+});
