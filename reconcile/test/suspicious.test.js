@@ -224,12 +224,22 @@ test('assessDiff: text dense with include/eval/exec keywords and no ";" scans in
   assert.ok(fastHolds('shell_exec still found', ["shell_exec($_GET['c']);"]).includes('shell-exec'));
 });
 
-test('assessDiff: a line over 10 KB is held as oversized-line without running the line rules', () => {
+test('assessDiff: unclosed block comments scan in linear time', () => {
+  fastHolds('unclosed block comments', Array(10).fill('/*x'.repeat(3333)));
+});
+
+test('assessDiff: normalization strips successive closed block comments separately', () => {
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: ['i/*b*/n/*d*/clude "/x.ico";'] }));
+  assert.ok(r.holds.some((h) => h.rule === 'include-non-php'), JSON.stringify(r));
+});
+
+test('assessDiff: a line over 10 KB is held without running the delta rules', () => {
+  const note = 'oversized-line (held without delta scanning)';
   for (const [label, l] of [['spaces', `$r = array_filter(${' '.repeat(100000)}$a);`], ['include', 'include"a"'.repeat(10000)], ['eval', 'eval('.repeat(20000)]]) {
-    assert.deepStrictEqual(fastHolds(label, ['$ok = 1;', l]), ['oversized-line'], label);
+    assert.deepStrictEqual(fastHolds(label, ['$ok = 1;', l]), [note], label);
   }
   const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', 'x'.repeat(20000)] }));
-  assert.deepStrictEqual(r.holds, [{ file: 'plugins/x/x.php', rule: 'oversized-line', line: 2 }]);
+  assert.deepStrictEqual(r.holds, [{ file: 'plugins/x/x.php', rule: note, line: 2 }]);
   assert.deepStrictEqual(fastHolds('just under', [' '.repeat(10240)]), []);
 });
 
@@ -256,4 +266,21 @@ test('YARA unavailable: fails closed as a yara-unavailable hold, never critical,
     for (const n of ['a.php', 'b.php']) fs.writeFileSync(path.join(d, 'p', n), '<?php echo 1;\n');
     assert.deepStrictEqual(scanPath(path.join(d, 'p'), d), [{ file: 'p', rule: 'yara-unavailable', line: 0, severity: 'warn' }], 'one per root');
   } finally { yara.setRunner(stub); }
+});
+
+test('assessDiff: oversized lines still go through the critical tier (YARA) on the raw text', () => {
+  const source = 'ev' + "al(base64_decode($_POST['x']));";
+  for (const l of [source + ' '.repeat(10241), ' '.repeat(10241) + source]) {
+    const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', l] }));
+    assert.ok(r.critical.some((h) => h.rule === 'yara:WEBSHELL_PHP_Generic_Eval'), JSON.stringify(r));
+    assert.deepStrictEqual(r.holds.map((h) => h.rule), ['oversized-line (held without delta scanning)']);
+  }
+});
+
+test('assessDiff: stealth remains critical across oversized and ordinary lines', () => {
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: [
+    "add_action('pre_user_query', $cb);" + ' '.repeat(10241),
+    "add_filter('all_plugins', $cb);",
+  ] }));
+  assert.ok(r.critical.some((h) => h.rule === 'stealth' && h.line === 1), JSON.stringify(r));
 });
