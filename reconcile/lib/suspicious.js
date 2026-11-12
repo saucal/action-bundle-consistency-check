@@ -123,7 +123,7 @@ const PHP_FILE_RE = /\.(?:php\d?|phtml|inc|module)$/i;
 /** Join the added text and strip comments/whitespace, so split, spaced-out or concatenated code reads as one. */
 function normalize(text) {
   // Then collapse literal concatenation ('<scr'.'ipt', "ht"."tps:") so split strings read whole.
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)(?:\/\/|#)[^\n]*/g, '$1').replace(/\s+/g, '').replace(CONCAT_RE, '');
+  return text.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '').replace(/(^|\s)(?:\/\/|#)[^\n]*/g, '$1').replace(/\s+/g, '').replace(CONCAT_RE, '');
 }
 
 /**
@@ -155,18 +155,19 @@ function assessDiff(diff) {
     if (MU_PLUGINS_RE.test(file)) hold('must-use-plugin');
 
     const lines = chunk.split('\n');
-    // A line over 10 KB is generated or minified, not a hand edit: held unread, blanked so no rule crawls it.
-    const added = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l, i) => {
-      if (l.length <= 10241) return l.slice(1); // 10 KB after the '+'
-      hold('oversized-line', i + 1);
+    const rawAdded = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+    // Lines over 10 KB are held without delta scanning; critical rules still read their raw text.
+    const added = rawAdded.map((l, i) => {
+      if (l.length <= 10240) return l;
+      hold('oversized-line (held without delta scanning)', i + 1);
       return '';
     });
     const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1));
 
     // Every rule, on every text type: a delta is too small for the PHP-only noise filter to matter.
-    for (const h of scanText(added.join('\n'))) {
+    for (const h of scanText(rawAdded.join('\n'))) {
       if (h.severity === 'critical') critical.push({ file, ...h });
-      else hold(h.rule, h.line);
+      else if (added[h.line - 1]) hold(h.rule, h.line);
     }
     added.forEach((l, i) => {
       const whole = l.replace(CONCAT_RE, ''); // '<scr' . 'ipt' read as one string, spacing kept
