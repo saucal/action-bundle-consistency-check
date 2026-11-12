@@ -8,6 +8,7 @@ const { execFileSync } = require('child_process');
 // commit and checked against these sha256 sums: never committed to this repo.
 const MANIFEST = require('../yara/signature-base.json');
 const HELPER = path.join(__dirname, 'yara-scan.py');
+// Always run python with -I: reconcile/yara/ (the manifest dir) would otherwise shadow `import yara` from cwd.
 
 let state = { error: 'rules not loaded' }; // { python, compiled } once prepare() succeeds
 let runner = null; // tests inject a stub here
