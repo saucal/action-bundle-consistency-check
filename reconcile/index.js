@@ -115,7 +115,7 @@ async function must(args, cwd) {
 }
 
 /** A heal no longer needed: close the open reconciliation PR, saying why, and delete its branch. */
-async function closeStale(repo, branch, why, { keepBase = false } = {}) {
+async function closeStale(repo, branch, why, { keepBase = false, baseNoted = false } = {}) {
   const quiet = { silent: true };
   const pr = (await sh('gh', ['api', `repos/${repo}/pulls?head=${repo.split('/')[0]}:${branch}&state=open`, '-q', '.[0].number'], quiet)).out.trim();
   if (/^\d+$/.test(pr)) {
@@ -126,7 +126,30 @@ async function closeStale(repo, branch, why, { keepBase = false } = {}) {
   if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${branch}`], quiet)).code === 0) core.info(`Deleted ${branch}.`);
   // G65: the held PR's temporary base goes with it (after the PR is closed: deleting a base closes its PR).
   const base = !keepBase && branch.startsWith('reconciliation-') && baseBranchOf(branch.slice('reconciliation-'.length));
+  // Owner trace rule: a base holding a merged PR 1's merge (never recorded) says why on that PR before it goes.
+  // baseNoted: the caller posts its own rejection comment there.
+  const held = base && !baseNoted ? await mergedOnBase(repo, branch, base) : null;
+  if (held === false) { core.warning(`Could not tell whether ${base} holds a merged PR's merge: kept; the next check decides.`); return; }
+  if (held) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${held.number}/comments`, '-f', `body=This merge (${held.merge.slice(0, 7)}) was not recorded as the reviewed heal: ${why} \`${base}\` is deleted. From the [consistency check run](${runUrl}).`], quiet);
   if (base && (await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base}`], quiet)).code === 0) core.info(`Deleted ${base}.`);
+}
+
+/**
+ * G65: the newest merged PR from `branch` into `base` whose merge the base holds ({ number, merge }), null
+ * when none (or no base), false when the API can't say (the caller then keeps the base).
+ */
+async function mergedOnBase(repo, branch, base) {
+  const quiet = { silent: true };
+  const at = (await sh('gh', ['api', `repos/${repo}/git/ref/heads/${base}`, '-q', '.object.sha'], quiet)).out.trim();
+  if (!/^[0-9a-f]{40}$/.test(at)) return null;
+  const r = await sh('gh', ['api', `repos/${repo}/pulls?base=${base}&state=closed&per_page=20`,
+    '-q', `[.[] | select(.merged_at != null and .head.ref == "${branch}")] | sort_by(.merged_at) | last // empty | {number, merge: .merge_commit_sha}`], quiet);
+  if (r.code !== 0) return false;
+  let pr = null;
+  try { pr = r.out.trim() ? JSON.parse(r.out) : null; } catch { return false; }
+  if (!pr || !pr.merge) return null;
+  const has = await contains(repo, pr.merge, at);
+  return has === null ? false : has ? { number: String(pr.number), merge: pr.merge } : null;
 }
 
 /**
@@ -178,7 +201,7 @@ async function ensureBase(repo, ref, branch, since, review) {
       return false;
     }
     if ((await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${base}`, '-f', `sha=${since}`, '-F', 'force=false'], quiet)).code === 0) return { rejected: null };
-    await closeStale(repo, branch, `its base \`${base}\` (at ${at.slice(0, 7)}) can't move to the last deployed commit ${since.slice(0, 7)} without a force push: a new PR reviews the heal built there.`);
+    await closeStale(repo, branch, `its base \`${base}\` (at ${at.slice(0, 7)}) can't move to the last deployed commit ${since.slice(0, 7)} without a force push: a new PR reviews the heal built there.`, { baseNoted: review.state === 'rejected' });
   }
   const made = await sh('gh', ['api', '-X', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/heads/${base}`, '-f', `sha=${since}`], quiet);
   if (made.code !== 0) { core.setFailed(`Could not create ${base} at ${since.slice(0, 7)}:\n${made.out}`); return false; }

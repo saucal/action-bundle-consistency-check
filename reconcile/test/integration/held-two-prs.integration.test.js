@@ -161,6 +161,30 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     assert.match(twoD.r.stdout, /could not be judged this run/);
     assert.ok(!G(origin, 'branch', '--list', 'selfheal-undeployed-main'));
 
+    // A base holding PR 1's unrecorded merge m1 is never deleted silently: PR 1 is told why first.
+    const holds = [[`compare/${m1}\\.\\.\\.${m1}`, 'identical'], [`compare/${m1}\\.\\.\\.main`, 'diverged'],
+      ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=open', '0'], merged12];
+    const told = (runRes, why) => {
+      const c = runRes.calls.findIndex((x) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not recorded as the reviewed heal: ${why} \`selfheal-base-main\` is deleted\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(x));
+      assert.ok(c >= 0 && del(runRes.calls) > c, runRes.why);
+    };
+    // Run 2e: main already carries the heal through a hand commit (the merged path): nothing to record from m1.
+    G(tmp, 'checkout', '-q', '-B', 'hand', 'origin/main');
+    fs.mkdirSync(path.join(tmp, 'plugins/customx'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'plugins/customx/customx.php'), reviewedPhp);
+    G(tmp, 'commit', '-qam', 'hand fix'); G(tmp, 'push', '-q', 'origin', 'hand:main');
+    const twoE = run('2e', [...tipLists, ...holds]);
+    told(twoE, '`main` already carries every change it proposed\\.');
+    assert.ok(!twoE.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoE.why);
+    G(origin, 'update-ref', 'refs/heads/main', U);
+    // Run 2f: the check is green (server back to the record D) while m1 waits: told, then the base goes.
+    const twoF = run('2f', [...tipLists, ...holds], { CLEANUP_ONLY: '1' });
+    told(twoF, 'the consistency check is green — the server matches the deployed build, so this reconciliation is no longer needed\\.');
+    // 2g: GitHub can't say whether the base holds the merge: kept, no comment.
+    const twoG = run('2g', [...tipLists, [`compare/${m1}\\.\\.\\.${m1}`, 'HTTP 502', 1], ...holds], { CLEANUP_ONLY: '1' });
+    assert.ok(del(twoG.calls) < 0 && !twoG.calls.some((c) => /issues\/12\/comments/.test(c)), twoG.why);
+    assert.match(twoG.r.stdout, /Could not tell whether selfheal-base-main holds a merged PR's merge/);
+
     // Run 2: the follow-up check (server unchanged, the record still D).
     const two = run(2, [...tipLists, merged12,
       ['compare/', 'alice'], ['api user', 'bot'], ['pr create', 'https://github.test/o/r/pull/13']]);
