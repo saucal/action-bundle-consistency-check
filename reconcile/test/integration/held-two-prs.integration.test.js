@@ -380,7 +380,7 @@ test('invariants 1, 2 and 5: a run whose PR targets selfheal-base-main never aut
     assert.ok(!two.calls.some((c) => /selfheal-undeployed-main --base|force=true/.test(c)), two.why);
     const body = fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8');
     assert.doesNotMatch(body, /Auto-merge:\*\* eligible/);
-    assert.match(body, /\*\*Auto-merge:\*\* held for a human:\n\n- `selfheal-base-main` holds PR #12's merge, not accepted as the reviewed heal \(the server changed since the review: it no longer runs this heal\): this heal is reviewed again/);
+    assert.match(body, /\*\*Auto-merge:\*\* held for a human:\n\n- `selfheal-base-main` held PR #12's merge, not accepted as the reviewed heal \(the server changed since the review: it no longer runs this heal\): it was deleted and created again at the last deployed commit, and this PR is the new review/);
     // Invariant 5: traced on PR 1.
     assert.ok(two.calls.some((c) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; \`selfheal-base-main\` \\(at ${m1.slice(0, 7)}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(c)), two.why);
 

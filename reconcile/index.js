@@ -698,7 +698,7 @@ async function routeTipPr(repo, num, logins) {
     .filter((r) => !r.startsWith('needs a human: ') || !r.slice('needs a human: '.length).split(', ').every((k) => cantMake.has(k)));
   if (heldTwo && autoMergeOn && autoMerge && autoMerge.ok) {
     reasons.push(review && review.state === 'rejected'
-      ? `\`${baseBranchOf(ref)}\` holds PR #${review.number}'s merge, not accepted as the reviewed heal (${review.why}): this heal is reviewed again`
+      ? `\`${baseBranchOf(ref)}\` held PR #${review.number}'s merge, not accepted as the reviewed heal (${review.why}): it was deleted and created again at the last deployed commit, and this PR is the new review`
       : `\`${baseBranchOf(ref)}\` holds a merge this run could not judge: this heal waits for a review`);
   }
   const reasonLines = reasons.map((r) => `- ${r}`).join('\n');
