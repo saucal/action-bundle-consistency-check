@@ -146,7 +146,7 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
       assert.ok(del(runRes.calls) >= 0 && create(runRes.calls) > del(runRes.calls) && prOne(runRes.calls) > create(runRes.calls), runRes.why);
       assert.ok(!runRes.outputs['build-sha'] && !runRes.outputs['undeployed-pr'], runRes.why);
       assert.ok(!runRes.calls.some((c) => /force=true/.test(c)), runRes.why);
-      assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why}\\. Nothing was recorded; a new PR #${num} asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) > prOne(runRes.calls), runRes.why);
+      assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Nothing was recorded; a new PR #${num} asks for review again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) > prOne(runRes.calls), runRes.why);
     };
 
     // Run 2a: the server changed again after the review: m1 is not what it runs, so nothing is recorded; the
@@ -166,7 +166,11 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     const m1plus = G(origin, 'rev-parse', 'selfheal-base-main');
     const twoB = run('2b', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1plus], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
       merged12, ['pr create', 'https://github.test/o/r/pull/16']]);
-    rejected(twoB, 16, `commits were pushed to the base branch on top of its merge ${m1.slice(0, 7)}`);
+    // UF3-I2: the stray commit goes with the base, so the comment and the log name it and the base head.
+    const stray = `commits were pushed to the base branch on top of its merge ${m1.slice(0, 7)} (base head ${m1plus}: ${m1plus} "stray")`;
+    rejected(twoB, 16, stray);
+    assert.ok(twoB.r.stdout.includes(`::warning::PR #12's merge was not accepted as the reviewed heal: ${stray}.`), twoB.why);
+    assert.ok(twoB.r.stdout.includes(`Deleted selfheal-base-main (at ${m1plus}).`), twoB.why);
 
     // Run 2c: PR 1 merged during the run (git saw the base at D, GitHub now says m1): kept, no PR, the next
     // check takes the merge. 2d: the API could not answer about the merged PR: kept the same way.

@@ -178,7 +178,7 @@ async function dropBase(repo, why, baseNoted = false) {
   const held = baseNoted ? null : await mergedPr1();
   if (base.at === null || held === 'unknown') { core.warning(`Could not tell whether ${base.name} holds a merged PR's merge: kept; the next check decides.`); return; }
   if (held) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${held.number}/comments`, '-f', `body=This merge (${held.merge.slice(0, 7)}) was not recorded as the reviewed heal: ${why} \`${base.name}\` is deleted. From the [consistency check run](${runUrl}).`], quiet);
-  if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base.name}`], quiet)).code === 0) { core.info(`Deleted ${base.name}.`); base.at = ''; }
+  if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base.name}`], quiet)).code === 0) { core.info(`Deleted ${base.name} (at ${base.at}).`); base.at = ''; }
 }
 
 /**
@@ -206,7 +206,10 @@ async function reviewState(cwd, since, tree, critical) {
     prParent: headOk ? await git('rev-parse', `${pr.head}^`) : '', prSubject: headOk ? await git('log', '-1', '--format=%s', pr.head) : '',
     tree: await git('rev-parse', `${at}^{tree}`) });
   if (!v) return { state: 'none' };
-  return { state: v.ok ? 'ok' : 'rejected', number: pr.number, m1: at, merge: pr.merge, why: v.why || '' };
+  // Commits on top of the merge go when the base is dropped: name them (and the head) so they can be recovered.
+  const onTop = !v.ok && pr.merge !== at ? (await git('log', '--format=%H "%s"', `${pr.merge}..${at}`)).split('\n').join(', ') : '';
+  const why = onTop ? `${v.why} (base head ${at}: ${onTop})` : v.why || '';
+  return { state: v.ok ? 'ok' : 'rejected', number: pr.number, m1: at, merge: pr.merge, why };
 }
 
 /**
