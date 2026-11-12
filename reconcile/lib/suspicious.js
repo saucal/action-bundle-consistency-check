@@ -7,11 +7,13 @@ const path = require('path');
 // a hit only holds the heal for a human, it never deletes anything.
 // [rule, regex, severity, phpOnly]. Only 'critical' holds a heal; 'warn' is listed for the reviewer.
 // Measured against woocommerce/jetpack/elementor/wordfence: warn rules fire on legit code, critical don't.
+// shortcut: statement spans ([^;]{0,1000}) are capped so text full of eval(/include keywords and no ';'
+// stays linear (each keyword rescans to the next ';'); a call padded past 1000 chars of real code escapes.
 const RULES = [
   ['eval-decoded', /\b(?:eval|assert|create_function)\s*\(\s*@?\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13|hex2bin|urldecode)\s*\(/i, 'critical', true],
-  ['eval-request', /\b(?:eval|assert|create_function)\s*\([^;]*\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
-  ['eval-request', /\bpreg_replace\s*\(\s*["'][^"']*\/[a-zA-Z]*e[a-zA-Z]*["']\s*,[^;]*\$_(?:GET|POST|REQUEST|COOKIE)\b/, 'critical', true],
-  ['shell-request', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\([^;]*\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
+  ['eval-request', /\b(?:eval|assert|create_function)\s*\([^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
+  ['eval-request', /\bpreg_replace\s*\(\s*["'][^"']*\/[a-zA-Z]*e[a-zA-Z]*["']\s*,[^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/, 'critical', true],
+  ['shell-request', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\([^;]{0,1000}\$_(?:GET|POST|REQUEST|COOKIE)\b/i, 'critical', true],
   ['shell-exec', /(?<![\w>:$.])(?:shell_exec|passthru|system|exec|proc_open|popen|pcntl_exec)\s*\(/i, 'warn', true],
   ['file-upload', /\bmove_uploaded_file\s*\(/i, 'warn', true],
   ['hides-users', /["'](?:pre_user_query|users_list_table_query_args|views_users)["']/, 'warn', true],
@@ -89,16 +91,18 @@ const DELTA_RULES = [
   ['decode', /\b(?:base64_decode|gzinflate|gzuncompress|str_rot13|hex2bin|atob)\s*\(/i],
   ['globals', /\$GLOBALS\s*\[/],
   ['raw-input', /php:\/\/input/i],
-  ['include-non-php', /\b(?:include|require)(?:_once)?\b[^;]*["'][^"';]*\.(?!php\b)[a-z0-9]{2,5}["']/i],
+  ['include-non-php', /\b(?:include|require)(?:_once)?\b[^;]{0,1000}["'][^"';]*\.(?!php\b)[a-z0-9]{2,5}["']/i],
   ['dynamic-call', /\$\w+\(\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b/],
   ['chr-chain', /(?:chr\(\d+\)\.?){3,}/i],
   // Request data reaching new code is how a callback or variable-function shell gets its command.
-  ['request-data', /\$_(?:GET|POST|REQUEST|COOKIE|FILES)\b|\$_SERVER\s*\[\s*['"]HTTP_/],
+  ['request-data', /\$_(?:GET|POST|REQUEST|COOKIE|FILES|ENV)\b|\$_SERVER\s*\[|\b(?:getallheaders|apache_request_headers|filter_input(?:_array)?)\s*\(/i],
+  // A callback that is a variable or a call's result (not a literal name or a closure) runs whatever it is handed.
+  ['dynamic-callback', new RegExp(String.raw`\b(?:(?:call_user_func(?:_array)?|forward_static_call(?:_array)?|array_map|register_shutdown_function|register_tick_function|spl_autoload_register)\s*\(|(?:array_filter|array_walk(?:_recursive)?|array_reduce|u[ak]?sort|preg_replace_callback|iterator_apply)\s*\((?:[^,()]|\([^()]*\))*,)\s*(?!(?:function|fn|static\s*(?:function|fn)|array)\s*\()(?:\$|[A-Za-z_\\][\w\\]*\s*\()`, 'i')],
   ['remote-fetch', /\b(?:wp_(?:safe_)?remote_(?:get|post|request)|download_url|curl_exec|fsockopen)\s*\(|\b(?:file_get_contents|fopen)\s*\(\s*["']https?:/i],
   ['writes-file', /\b(?:file_put_contents|fwrite|fputs)\s*\(/i],
   // Markup a hotfix rarely adds and a skimmer always does: script/iframe tags, external URLs.
   ['adds-script-tag', /<\s*(?:script|iframe)\b/i],
-  ['external-url', /\bhttps?:\/\//i],
+  ['external-url', /\bhttps?:\/\/|["']\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i], // protocol-relative only inside quotes: not a // comment
 ];
 // The DELTA_RULES an adopted root is also scanned with, raw per line (so a commented or never-called
 // eval/decode still shows): the obfuscation/execution signatures, not the ordinary-plugin noise.
@@ -110,12 +114,16 @@ const AUTH_CHECK_RE = /\b(?:current_user_can|wp_verify_nonce|check_admin_referer
 const RISKY_FILE_RE = /(?:^|\/)(?:package\.json|composer\.(?:json|lock)|\.htaccess|\.user\.ini|php\.ini|\.npmrc|\.pnpmfile\.cjs|pnpm-workspace\.yaml|\.yarnrc(?:\.yml)?)$|\.phar$/i;
 // Verify and Deploy build with every secret, and pnpm/npm run scripts found in the tree: a delta to
 // anything the toolchain can execute waits for a human. (On a store, JS is also the skimmer vector.)
-const SCRIPT_FILE_RE = /\.(?:[cm]?js|jsx|tsx?|sh|bash)$/i;
+const SCRIPT_FILE_RE = /\.(?:[cm]?js|jsx|[cm]?tsx?|sh|bash|coffee)$/i;
+// An extensionless script (bin/build) is known by its shebang: a hunk at line 1 that shows one.
+const SHEBANG_HUNK_RE = /^@@ -\d+(?:,\d+)? \+1(?:,\d+)? @@.*\n[ +]#!/m;
+const CONCAT_RE = /['"]\s*\.\s*['"]/g; // literal string concatenation
 const PHP_FILE_RE = /\.(?:php\d?|phtml|inc|module)$/i;
 
-/** Join the added text and strip comments/whitespace, so split or spaced-out code reads as one. */
+/** Join the added text and strip comments/whitespace, so split, spaced-out or concatenated code reads as one. */
 function normalize(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)(?:\/\/|#)[^\n]*/g, '$1').replace(/\s+/g, '');
+  // Then collapse literal concatenation ('<scr'.'ipt', "ht"."tps:") so split strings read whole.
+  return text.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '').replace(/(^|\s)(?:\/\/|#)[^\n]*/g, '$1').replace(/\s+/g, '').replace(CONCAT_RE, '');
 }
 
 /**
@@ -141,22 +149,29 @@ function assessDiff(diff) {
     if (/^Binary files /m.test(chunk) || /^GIT binary patch/m.test(chunk)) hold('binary');
     if (/^(?:new file mode|new mode) 120000/m.test(chunk)) hold('symlink');
     if (RISKY_FILE_RE.test(file)) hold('risky-file');
-    if (SCRIPT_FILE_RE.test(file)) hold('script-file');
+    if (SCRIPT_FILE_RE.test(file) || SHEBANG_HUNK_RE.test(chunk)) hold('script-file');
     // A file the server added (not an edit to one the repo already has): where a dropped backdoor shows up.
     if (/^new file mode /m.test(chunk) || /^--- \/dev\/null$/m.test(chunk)) hold('new-file');
     if (MU_PLUGINS_RE.test(file)) hold('must-use-plugin');
 
     const lines = chunk.split('\n');
-    const added = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+    const rawAdded = lines.filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+    // Lines over 10 KB are held without delta scanning; critical rules still read their raw text.
+    const added = rawAdded.map((l, i) => {
+      if (l.length <= 10240) return l;
+      hold('oversized-line (held without delta scanning)', i + 1);
+      return '';
+    });
     const removed = lines.filter((l) => l.startsWith('-') && !l.startsWith('---')).map((l) => l.slice(1));
 
     // Every rule, on every text type: a delta is too small for the PHP-only noise filter to matter.
-    for (const h of scanText(added.join('\n'))) {
+    for (const h of scanText(rawAdded.join('\n'))) {
       if (h.severity === 'critical') critical.push({ file, ...h });
-      else hold(h.rule, h.line);
+      else if (added[h.line - 1]) hold(h.rule, h.line);
     }
     added.forEach((l, i) => {
-      for (const [rule, re] of DELTA_RULES) if (re.test(l)) hold(rule, i + 1);
+      const whole = l.replace(CONCAT_RE, ''); // '<scr' . 'ipt' read as one string, spacing kept
+      for (const [rule, re] of DELTA_RULES) if (re.test(l) || re.test(whole)) hold(rule, i + 1);
       if (PHP_FILE_RE.test(file) && BACKTICK_RE.test(l)) hold('backtick', i + 1);
     });
     const joined = normalize(added.join('\n'));
@@ -167,4 +182,12 @@ function assessDiff(diff) {
   return { critical, holds };
 }
 
-module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, RULES };
+/** True when the file starts with `#!`: a script whatever its name (the diff may not show line 1). */
+function hasShebang(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try { const b = Buffer.alloc(2); return fs.readSync(fd, b, 0, 2, 0) === 2 && b.toString() === '#!'; } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
+module.exports = { scanText, addedLines, scanPath, scanPatch, assessDiff, hasShebang, RULES };

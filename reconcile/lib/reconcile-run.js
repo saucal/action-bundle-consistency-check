@@ -11,7 +11,7 @@ const { reconcilePatched, dropPatches, BRIDGE } = require('./reconcile-patched')
 const { adoptComponent } = require('./adopt');
 const { isSensitive } = require('./detectors');
 const { generatePatch, patchEntries, isHealEntry } = require('./patch-gen');
-const { scanPath, assessDiff } = require('./suspicious');
+const { scanPath, assessDiff, hasShebang } = require('./suspicious');
 const { pluginVersion, themeVersion } = require('./extract-version');
 
 // Items healed by moving a composer require/lock (not by copying code).
@@ -431,6 +431,10 @@ async function reconcileRun(o) {
       .map((f) => generatePatch(f.inSource ? f.src : '/dev/null', f.onServer ? f.srv : '/dev/null', f.p)).join('\n');
     c.delta = assessDiff(diff);
     for (const f of files) if (f.symlink) c.delta.holds.push({ file: f.p, rule: 'symlink', line: 0 });
+    for (const f of files) {
+      if (f.symlink || c.delta.holds.some((h) => h.file === f.p && h.rule === 'script-file')) continue;
+      if ((f.onServer && hasShebang(f.srv)) || (f.inSource && hasShebang(f.src))) c.delta.holds.push({ file: f.p, rule: 'script-file', line: 0 });
+    }
     if (c.delta.critical.length) {
       c.category = 'suspicious';
       c.recoverable = false;
