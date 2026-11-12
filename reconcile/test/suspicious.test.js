@@ -132,6 +132,27 @@ test('assessDiff: request data, remote fetches and file writes in a delta hold i
   assert.ok(holds(['file_put_contents( WP_CONTENT_DIR . "/mu-plugins/a.php", $c );']).includes('writes-file'));
 });
 
+test('assessDiff: request-data and external-url hold every spelling, callbacks fed a variable or a call hold', () => {
+  const holds = (add) => assessDiff(diffOf('plugins/x/x.php', { add })).holds.map((h) => h.rule);
+  const has = (add, rule) => assert.ok(holds(add).includes(rule), `${rule} in ${add}: ${holds(add)}`);
+  has(["array_map(filter_input(INPUT_GET,'f'), array(filter_input(INPUT_GET,'c')));"], 'request-data');
+  has(["array_map(filter_input(INPUT_GET,'f'), array(filter_input(INPUT_GET,'c')));"], 'dynamic-callback');
+  has(["wp_enqueue_script('cart-helper','//cdn.example-cdn.net/c.js');"], 'external-url');
+  has(["$h=getallheaders(); call_user_func($h['X-F'],$h['X-K']);"], 'request-data');
+  has(["$h=getallheaders(); call_user_func($h['X-F'],$h['X-K']);"], 'dynamic-callback');
+  for (const l of ['$h = apache_request_headers();', '$v = filter_input_array(INPUT_POST);', '$u = $_SERVER["REQUEST_URI"];', '$k = $_ENV["K"];']) has([l], 'request-data');
+  for (const l of ['usort($rows, $cmp);', 'preg_replace_callback("/x/", $cb, $s);', 'register_shutdown_function($f);', 'array_filter($a, get_cb());'])
+    has([l], 'dynamic-callback');
+  // Concatenation evasion: the joined text is read with literal concatenations collapsed.
+  has(["echo '<scr' . 'ipt src=x></scr' . 'ipt>';"], 'adds-script-tag');
+  has(['$u = "ht" . "tps://t.example/p";'], 'external-url');
+  // Ordinary code stays clean: literal or closure callbacks, a // comment, a callable array.
+  for (const l of ["$x = array_map('trim', $x);", '$x = array_map(function ($v) { return $v + 1; }, $x);', 'usort($rows, fn($a, $b) => $a <=> $b);',
+    "$y = array_filter($x, 'strlen');", "usort($rows, array($this, 'cmp'));", '$a = 1; // see docs', "$s = implode('.', $parts);"]) {
+    assert.deepStrictEqual(holds([l]), [], l);
+  }
+});
+
 test('assessDiff: deltas to build-executable files hold (scripts and package-manager config)', () => {
   const rules = (file) => assessDiff(diffOf(file, { add: ['x = 1;'] })).holds.map((h) => h.rule);
   assert.ok(rules('plugins/x/build/webpack.config.js').includes('script-file'));
