@@ -11,7 +11,7 @@ const { reconcilePatched, dropPatches, BRIDGE } = require('./reconcile-patched')
 const { adoptComponent } = require('./adopt');
 const { isSensitive } = require('./detectors');
 const { generatePatch, patchEntries, isHealEntry } = require('./patch-gen');
-const { scanPath, assessDiff } = require('./suspicious');
+const { scanPath, assessDiff, hasShebang, yaraFiles, describe } = require('./suspicious');
 const { pluginVersion, themeVersion } = require('./extract-version');
 
 // Items healed by moving a composer require/lock (not by copying code).
@@ -400,7 +400,7 @@ async function reconcileRun(o) {
       delete c.bridged; // a Pass 1 fallback is undone below
       c.category = 'suspicious';
       c.recoverable = false;
-      c.remediation = `${c.key}: the server's edits carry signals of compromised code — patch withheld from the PR. Review the server as a possible incident.`;
+      c.remediation = `${c.key}: the server's edits carry signals of compromised code${matched(c.delta.critical)} — patch withheld from the PR. Review the server as a possible incident.`;
       applied.push(`patched:${c.key}:held-suspicious`);
     }
   }
@@ -431,10 +431,20 @@ async function reconcileRun(o) {
       .map((f) => generatePatch(f.inSource ? f.src : '/dev/null', f.onServer ? f.srv : '/dev/null', f.p)).join('\n');
     c.delta = assessDiff(diff);
     for (const f of files) if (f.symlink) c.delta.holds.push({ file: f.p, rule: 'symlink', line: 0 });
+    for (const f of files) {
+      if (f.symlink || c.delta.holds.some((h) => h.file === f.p && h.rule === 'script-file')) continue;
+      if ((f.onServer && hasShebang(f.srv)) || (f.inSource && hasShebang(f.src))) c.delta.holds.push({ file: f.p, rule: 'script-file', line: 0 });
+    }
+    // The server's copies as whole files, not just the lines the diff adds.
+    const copies = files.filter((f) => f.onServer);
+    for (const h of yaraFiles(copies.map((f) => f.srv), (s) => copies.find((f) => f.srv === s).p, c.key)) {
+      const into = h.severity === 'critical' ? c.delta.critical : c.delta.holds;
+      if (!into.some((x) => x.file === h.file && x.rule === h.rule)) into.push(h);
+    }
     if (c.delta.critical.length) {
       c.category = 'suspicious';
       c.recoverable = false;
-      c.remediation = `${c.key}: the server's version carries signals of compromised code — not copied into the repo. Review the server as a possible incident.`;
+      c.remediation = `${c.key}: the server's version carries signals of compromised code${matched(c.delta.critical)} — not copied into the repo. Review the server as a possible incident.`;
       applied.push(`tracked:${c.key}:held-suspicious`);
       continue;
     }
@@ -487,7 +497,7 @@ async function reconcileRun(o) {
         c.category = 'suspicious';
         c.recoverable = false;
         c.security = hits;
-        c.remediation = `${c.key} on the server carries signals of compromised code — not adopted. Review it as a possible security incident.`;
+        c.remediation = `${c.key} on the server carries signals of compromised code${matched(hits)} — not adopted. Review it as a possible security incident.`;
         applied.push(`adopt:${c.key}:held-suspicious`);
         continue;
       }
@@ -567,7 +577,7 @@ async function reconcileRun(o) {
     if (hits.some((h) => h.severity === 'critical') && c.recoverable) {
       c.recoverable = false;
       c.category = 'suspicious';
-      c.remediation = `${c.key}: the change taken from the server carries signals of compromised code. Review it as a possible security incident before merging.`;
+      c.remediation = `${c.key}: the change taken from the server carries signals of compromised code${matched(hits)}. Review it as a possible security incident before merging.`;
     }
     for (const h of hits) security[h.severity === 'critical' ? 'critical' : 'warn'].push({ key: c.key, ...h });
   }
@@ -598,7 +608,7 @@ async function reconcileRun(o) {
     if (!c.recoverable) continue;
     if (String(c.category).startsWith('adopted')) {
       hold(c, `${c.key}: adopts server files`);
-      const sigs = [...new Set((c.security || []).map((h) => h.rule))];
+      const sigs = [...new Set((c.security || []).map(describe))];
       if (sigs.length) hold(c, `${c.key}: potential attack signatures (${sigs.join(', ')}) — review`);
     }
     const risky = c.newRequire && riskyPluginCategory(c.composerPackage);
@@ -626,6 +636,8 @@ async function reconcileRun(o) {
         hold(c, `${c.key}: known vulnerabilit${c.vulns.length > 1 ? 'ies' : 'y'} at v${c.vulnVersion || '?'} — ${named}${fix}`);
       }
     }
+    // Never merge what the webshell rules could not scan (a delta or an adoption already says so above).
+    if (!c.delta && !String(c.category).startsWith('adopted') && (c.security || []).some((h) => h.rule === 'yara-unavailable')) hold(c, `${c.key}: yara-unavailable`);
     if (c.delta && c.delta.holds.length) hold(c, `${c.key}: ${[...new Set(c.delta.holds.map((h) => h.rule))].join(', ')}`);
     if (pendingHolds.has(c.key)) hold(c, pendingHolds.get(c.key));
     // A patch that changes the version the site runs never merges unattended.
@@ -658,6 +670,12 @@ async function reconcileRun(o) {
   const autoMerge = { ok: !critical && eligible.length > 0 && !itemReasons.size && !needsHuman.length, reasons, eligible, pending: [...new Set(pending)], open: [...new Set(open)] };
 
   return { classified, outcome, applied, adoptedPaths, trackedPaths, verification, security, autoMerge };
+}
+
+/** ' (matched <rule> (<author>, signature-base); stealth)' for the critical hits: what a hold reason names. */
+function matched(hits) {
+  const d = [...new Set((hits || []).filter((h) => h.severity === 'critical').map(describe))];
+  return d.length ? ` (${d.join('; ')})` : '';
 }
 
 /** True when a patch adds or removes a WordPress version header line (`Version:` / `Stable tag:`). */
