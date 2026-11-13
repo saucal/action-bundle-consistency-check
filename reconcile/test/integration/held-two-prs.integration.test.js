@@ -161,6 +161,15 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     const reviewedPhp = fs.readFileSync(php, 'utf8');
     fs.writeFileSync(php, reviewedPhp.replace('return 2', 'return 3'));
     fs.writeFileSync(path.join(ws, 'diff.txt'), deriveDrift(proj, server).contentDiffText);
+    const twoAFailedComment = run('2a-comment-failed', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1],
+      ['PATCH repos/o/r/git/refs/heads/selfheal-base-main', 'not a fast forward', 1], merged12,
+      ['issues/12/comments', 'HTTP 502', 1], ['pr create', 'HTTP 502', 1]]);
+    assert.strictEqual(twoAFailedComment.r.status, 1, twoAFailedComment.why);
+    assert.match(twoAFailedComment.r.stdout, /Could not post the rejection on PR #12: selfheal-base-main .* kept; the next check will retry/);
+    assert.strictEqual(twoAFailedComment.calls.filter((c) => /issues\/12\/comments/.test(c)).length, 1, twoAFailedComment.why);
+    assert.ok(del(twoAFailedComment.calls) < 0 && create(twoAFailedComment.calls) < 0 && prOne(twoAFailedComment.calls) < 0, twoAFailedComment.why);
+    assert.ok(!twoAFailedComment.outputs['build-sha'], twoAFailedComment.why);
+    // The next check can still judge the original merge and successfully explain its rejection.
     const twoA = run('2a', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
       merged12, ['pr create', 'https://github.test/o/r/pull/14']]);
     rejected(twoA, 14, 'the server changed since the review: it no longer runs this heal');
@@ -202,11 +211,19 @@ test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merg
     fs.mkdirSync(path.join(tmp, 'plugins/customx'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'plugins/customx/customx.php'), reviewedPhp);
     G(tmp, 'commit', '-qam', 'hand fix'); G(tmp, 'push', '-q', 'origin', 'hand:main');
+    const twoEFailedComment = run('2e-comment-failed', [...tipLists, ...holds, ['issues/12/comments', 'HTTP 502', 1]]);
+    assert.strictEqual(twoEFailedComment.r.status, 1, twoEFailedComment.why);
+    assert.ok(del(twoEFailedComment.calls) < 0, twoEFailedComment.why);
+    assert.match(twoEFailedComment.r.stdout, /Could not post the explanation on PR #12: selfheal-base-main .* kept; the next check will retry/);
     const twoE = run('2e', [...tipLists, ...holds]);
     told(twoE, '`main` already carries every change it proposed\\.');
     assert.ok(!twoE.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoE.why);
     G(origin, 'update-ref', 'refs/heads/main', U);
     // Run 2f: the check is green (server back to the record D) while m1 waits: told, then the base goes.
+    const twoFFailedComment = run('2f-comment-failed', [...tipLists, ...holds, ['issues/12/comments', 'HTTP 502', 1]], { CLEANUP_ONLY: '1' });
+    assert.strictEqual(twoFFailedComment.r.status, 1, twoFFailedComment.why);
+    assert.ok(del(twoFFailedComment.calls) < 0, twoFFailedComment.why);
+    assert.match(twoFFailedComment.r.stdout, /Could not post the explanation on PR #12: selfheal-base-main .* kept; the next check will retry/);
     const twoF = run('2f', [...tipLists, ...holds], { CLEANUP_ONLY: '1' });
     told(twoF, 'the consistency check is green — the server matches the deployed build, so this reconciliation is no longer needed\\.');
     // 2g: GitHub can't say whether the base holds the merge: kept, no comment.

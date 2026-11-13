@@ -177,7 +177,10 @@ async function dropBase(repo, why, baseNoted = false) {
   const quiet = { silent: true };
   const held = baseNoted ? null : await mergedPr1();
   if (base.at === null || held === 'unknown') { core.warning(`Could not tell whether ${base.name} holds a merged PR's merge: kept; the next check decides.`); return; }
-  if (held) await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${held.number}/comments`, '-f', `body=This merge (${held.merge.slice(0, 7)}) was not recorded as the reviewed heal: ${why} \`${base.name}\` is deleted. From the [consistency check run](${runUrl}).`], quiet);
+  if (held) {
+    const noted = await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${held.number}/comments`, '-f', `body=This merge (${held.merge.slice(0, 7)}) was not recorded as the reviewed heal: ${why} \`${base.name}\` is deleted. From the [consistency check run](${runUrl}).`], quiet);
+    if (noted.code !== 0) throw new Error(`Could not post the explanation on PR #${held.number}: ${base.name} (at ${base.at}) kept; the next check will retry.\n${noted.out}`);
+  }
   if ((await sh('gh', ['api', '-X', 'DELETE', `repos/${repo}/git/refs/heads/${base.name}`], quiet)).code === 0) { core.info(`Deleted ${base.name} (at ${base.at}).`); base.at = ''; }
 }
 
@@ -231,7 +234,8 @@ async function ensureBase(repo, ref, branch, since, review) {
     if ((await sh('gh', ['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/${name}`, '-f', `sha=${since}`, '-F', 'force=false'], quiet)).code === 0) { base.at = since; return { rejected: null }; }
     // Owner trace rule: PR 1 hears why before its base goes, so a later failure in this run can't leave the deletion untraced.
     if (review.state === 'rejected') {
-      await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${review.number}/comments`, '-f', `body=This merge (${review.merge.slice(0, 7)}) was not accepted as the reviewed heal because ${review.why}. Nothing was recorded; \`${name}\` (at ${at.slice(0, 7)}) is deleted and a new PR follows to review the heal again. From the [consistency check run](${runUrl}).`], quiet);
+      const noted = await sh('gh', ['api', '-X', 'POST', `repos/${repo}/issues/${review.number}/comments`, '-f', `body=This merge (${review.merge.slice(0, 7)}) was not accepted as the reviewed heal because ${review.why}. Nothing was recorded; \`${name}\` (at ${at.slice(0, 7)}) is deleted and a new PR follows to review the heal again. From the [consistency check run](${runUrl}).`], quiet);
+      if (noted.code !== 0) throw new Error(`Could not post the rejection on PR #${review.number}: ${name} (at ${at}) kept; the next check will retry.\n${noted.out}`);
       core.warning(`PR #${review.number}'s merge was not accepted as the reviewed heal: ${review.why}.`);
     }
     await closeStale(repo, branch, `its base \`${name}\` (at ${at.slice(0, 7)}) can't move to the last deployed commit ${since.slice(0, 7)} without a force push: a new PR reviews the heal built there.`, { baseNoted: review.state === 'rejected' });
