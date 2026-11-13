@@ -99,10 +99,12 @@ const baseBranchOf = (ref) => `selfheal-base-${ref}`;
  * Is the base branch's head `at` the reviewed heal to record, given the newest merged PR 1 (`merge` its
  * merge_commit_sha, `prHead` its head)? Only PR 1's own merge commit: 2 parents, D (`since`) then the
  * merged head, which is a heal commit on D; its tree is the heal this run builds on D again (the server
- * still runs it); no compromise signals (those are never recorded unattended).
+ * still runs it); no compromise signals (those are never recorded unattended). Its subject must be the merge
+ * button's default (`title`: "Merge pull request #N from <owner>/reconciliation-<ref>"): Deploy's guard and healOf
+ * recognise a recorded heal only by it, so an edited title would let the next push deploy without the heal.
  * @returns {{ ok: true } | { why: string } | null} null: the base does not hold that merge at all
  */
-const reviewVerdict = ({ at, merge, onTop = false, parents = [], prHead, prParent = '', prSubject = '', since, tree, healTree, critical = false }) => {
+const reviewVerdict = ({ at, merge, onTop = false, parents = [], prHead, prParent = '', prSubject = '', subject = '', title = '', since, tree, healTree, critical = false }) => {
   if (!at || !merge) return null;
   if (at !== merge) return onTop ? { why: `commits were pushed to the base branch on top of its merge ${merge.slice(0, 7)}` } : null;
   if (parents.length < 2) return { why: 'it is not a merge commit (a squash or rebase merge): the record must be a merge of the deployed commit and the heal' };
@@ -110,6 +112,7 @@ const reviewVerdict = ({ at, merge, onTop = false, parents = [], prHead, prParen
   if (parents[0] !== since) return { why: `the last deployed commit is ${since.slice(0, 7)} now, not the ${parents[0].slice(0, 7)} it was merged on` };
   if (parents[1] !== prHead) return { why: "its merge commit does not merge this PR's head" };
   if (prParent !== since || !/^Reconcile server drift on .*\[commit only\]/.test(prSubject)) return { why: "this PR's head is not a self-heal commit built on the last deployed commit" };
+  if (!title || !String(subject).startsWith(title)) return { why: `its merge commit's title was edited: it must start with "${title}", the title Deploy recognises a self-heal by` };
   if (critical) return { why: 'the heal carries compromise signals, which are never recorded unattended' };
   if (!tree || tree !== healTree) return { why: 'the server changed since the review: it no longer runs this heal' };
   return { ok: true };

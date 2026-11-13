@@ -19,7 +19,7 @@ test('PR 1 merges into a temporary selfheal-base-<ref>, never a selfheal-undeplo
 
 test('reviewVerdict: only PR 1\'s own 2-parent merge on D of a heal commit on D, whose tree the server still runs', () => {
   const D = 'd'.repeat(40);
-  const o = { at: 'm', merge: 'm', parents: [D, 'r1'], prHead: 'r1', prParent: D, prSubject: 'Reconcile server drift on main [commit only]', since: D, tree: 't', healTree: 't' };
+  const o = { at: 'm', merge: 'm', parents: [D, 'r1'], prHead: 'r1', prParent: D, prSubject: 'Reconcile server drift on main [commit only]', subject: 'Merge pull request #12 from saucal/reconciliation-main', title: 'Merge pull request #12 from saucal/reconciliation-main', since: D, tree: 't', healTree: 't' };
   assert.deepStrictEqual(reviewVerdict(o), { ok: true });
   const why = (x) => (reviewVerdict({ ...o, ...x }) || {}).why || '';
   assert.match(why({ parents: [D] }), /not a merge commit \(a squash or rebase merge\)/);
@@ -28,6 +28,8 @@ test('reviewVerdict: only PR 1\'s own 2-parent merge on D of a heal commit on D,
   assert.match(why({ parents: [D, 'x'] }), /does not merge this PR's head/);
   assert.match(why({ prParent: 'u' }), /not a self-heal commit built on the last deployed commit/); // a head rebuilt on U, then reverted
   assert.match(why({ prSubject: 'Revert stuff' }), /not a self-heal commit/);
+  assert.match(why({ subject: 'Heal reviewed by Ana' }), /title was edited: it must start with "Merge pull request #12 from saucal\/reconciliation-main"/);
+  assert.match(why({ subject: 'Merge pull request #12 from saucal/reconciliation-develop' }), /title was edited/);
   assert.match(why({ critical: true }), /compromise signals/);
   assert.match(why({ healTree: 't2' }), /the server changed since the review/);
   assert.match(why({ tree: '' }), /the server changed/);
@@ -80,7 +82,7 @@ test('graph: PR 1 = r1 on D (heal only), m1 = merge(D, r1) has r1\'s tree, engin
     const m1 = g('rev-parse', 'HEAD');
     const parents = g('rev-list', '--parents', '-n', '1', m1).split(' ').slice(1);
     assert.deepStrictEqual(reviewVerdict({ at: m1, merge: m1, parents, prHead: r1, prParent: g('rev-parse', `${r1}^`), prSubject: g('log', '-1', '--format=%s', r1),
-      since: D, tree: g('rev-parse', `${m1}^{tree}`), healTree: g('rev-parse', `${r1}^{tree}`) }), { ok: true });
+      subject: g('log', '-1', '--format=%s', m1), title: 'Merge pull request #12 from saucal/reconciliation-main', since: D, tree: g('rev-parse', `${m1}^{tree}`), healTree: g('rev-parse', `${r1}^{tree}`) }), { ok: true });
     // run A's tree: the heal on the tip = what git's merge of m1 and U writes when nothing conflicts.
     const tipTree = g('merge-tree', '--write-tree', U, m1).split('\n')[0];
     const tip = await tipHead({ git, base: U, rm: m1, tipTree, message: 'unused' });

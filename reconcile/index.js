@@ -207,6 +207,7 @@ async function reviewState(cwd, since, tree, critical) {
   const v = reviewVerdict({ at, merge: pr.merge, parents, prHead: pr.head, since, critical, healTree: tree,
     onTop: pr.merge !== at, // mergedPr1: the base holds the merge
     prParent: headOk ? await git('rev-parse', `${pr.head}^`) : '', prSubject: headOk ? await git('log', '-1', '--format=%s', pr.head) : '',
+    subject: headOk ? await git('log', '-1', '--format=%s', at) : '', title: `Merge pull request #${pr.number} from ${env('REPO').split('/')[0]}/reconciliation-${name.slice('selfheal-base-'.length)}`,
     tree: await git('rev-parse', `${at}^{tree}`) });
   if (!v) return { state: 'none' };
   // Commits on top of the merge go when the base is dropped: name them (and the head) so they can be recovered.
