@@ -221,6 +221,12 @@ runs:
         tools: composer
         coverage: none
 
+    - name: Setup Python for reconcile
+      if: ${{ !cancelled() && steps.pre-build-consistency-check.outcome == 'failure' && inputs.reconcile == '1' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
     # The scanner's YARA tier (signature-base webshell rules, fetched by reconcile at run time). A failed
     # install is not fatal: reconcile then holds every server-derived item as yara-unavailable.
     - name: Install yara-python for reconcile
