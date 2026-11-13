@@ -190,8 +190,18 @@ heal).
 - The PR is closed once the built repo records something its head doesn't contain (e.g. a forced
   Deploy), or when none of its heals was ever recorded and the record is on `{ref}` (its verify failed).
 
-A held heal keeps the single reconciliation PR, with the same head rule (RM, or FT on a conflict) and
-`[commit only]`. Merged by hand, it records RM, and the undeployed commits wait for the next Deploy.
+A held heal is two PRs (owner, 2026-11-10). PR 1, from `reconciliation-{ref}`, has R on D as its head
+and a temporary `selfheal-base-{ref}` branch at D as its base, so its diff is the heal alone. Merging it
+deploys nothing (Deploy skips that branch); its merge commit m1 = merge(D, R) is the heal. The next
+check (requested by Deploy on that push when the caller's push trigger lists `selfheal-base-*`, else the
+next scheduled one) accepts m1 only as PR 1's own 2-parent merge of a heal commit on D whose tree the
+server still runs, records it once a build of it reproduces the server, and opens the engineers' PR above
+with m1 as RM. `selfheal-base-{ref}` stays until m1 is recorded or merged (a failed verify needs no new
+review). A merge not accepted (squash/rebase, commits on top, server changed since) gets a comment saying
+why, nothing is recorded, and a new PR 1 asks for review again; a base the check can't judge (API error,
+moved mid-run) is kept for the next check. Closed unmerged, PR 1 is never reused: the next check deletes
+its base and opens a new one. Without undeployed commits a held heal
+is one PR into `{ref}`, as before.
 
 ### The PR
 
