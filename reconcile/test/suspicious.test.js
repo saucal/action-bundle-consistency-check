@@ -260,11 +260,11 @@ test('YARA unavailable: fails closed as a yara-unavailable hold, never critical,
   yara.setRunner(() => ({ error: "No module named 'yara'" }));
   try {
     const r = assessDiff(diffOf('plugins/x/x.php', { add: ["echo esc_html__( 'Buy now', 'x' );"] }));
-    assert.deepStrictEqual(r, { critical: [], holds: [{ file: 'plugins/x/x.php', rule: 'yara-unavailable', line: 0, severity: 'warn' }] });
+    assert.deepStrictEqual(r, { critical: [], holds: [{ file: 'plugins/x/x.php', rule: 'yara-unavailable', line: 0, severity: 'warn', cause: "No module named 'yara'" }] });
     const d = fs.mkdtempSync(path.join(os.tmpdir(), 'yara-'));
     fs.mkdirSync(path.join(d, 'p'));
     for (const n of ['a.php', 'b.php']) fs.writeFileSync(path.join(d, 'p', n), '<?php echo 1;\n');
-    assert.deepStrictEqual(scanPath(path.join(d, 'p'), d), [{ file: 'p', rule: 'yara-unavailable', line: 0, severity: 'warn' }], 'one per root');
+    assert.deepStrictEqual(scanPath(path.join(d, 'p'), d), [{ file: 'p', rule: 'yara-unavailable', line: 0, severity: 'warn', cause: "No module named 'yara'" }], 'one per root');
   } finally { yara.setRunner(stub); }
 });
 

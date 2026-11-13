@@ -58,14 +58,14 @@ function describe(h) {
   return String(h.rule).startsWith('yara:') ? `matched ${h.rule.slice(5)} (${h.author || 'unknown author'}, signature-base)` : h.rule;
 }
 
-const unavailable = (file) => ({ file, rule: 'yara-unavailable', line: 0, severity: 'warn' });
+const unavailable = (file, cause) => ({ file, rule: 'yara-unavailable', line: 0, severity: 'warn', cause });
 const yaraHit = (file, m) => ({ file, rule: `yara:${m.rule}`, author: m.author, line: 0, severity: 'critical' });
 
 /** YARA over whole files: a critical hit per match, or one yara-unavailable hold (labelled `where`) when the rules can't run. */
 function yaraFiles(files, rel, where) {
   if (!files.length) return [];
   const r = yara.scan({ files });
-  if (r.error) return [unavailable(where)];
+  if (r.error) return [unavailable(where, r.error)];
   return r.files.flatMap((ms, i) => ms.map((m) => yaraHit(rel(files[i]), m)));
 }
 
@@ -73,7 +73,7 @@ function yaraFiles(files, rel, where) {
 function yaraBuffers(items) {
   if (!items.length) return [];
   const r = yara.scan({ buffers: items.map((b) => b.text) });
-  if (r.error) return items.map((b) => unavailable(b.file));
+  if (r.error) return items.map((b) => unavailable(b.file, r.error));
   return r.buffers.flatMap((ms, i) => ms.map((m) => yaraHit(items[i].file, m)));
 }
 

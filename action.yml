@@ -313,3 +313,4 @@ runs:
         data-file: ${{ steps.pre-build-consistency-check.outputs.bufferPath }}
         commit-message: |
           Consistency check failed @here
+          ${{ steps.reconcile.outputs.webshell-scan-warning }}
