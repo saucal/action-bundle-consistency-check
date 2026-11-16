@@ -150,7 +150,8 @@ hand-edited compiled assets and files missing on the server are flagged.
 
 Everything taken from the server without registry provenance is scanned. A heal is held for review
 (the rest still merges) when it adds a file, touches a must-use plugin, adds a script tag or an
-external URL, reads request data, changes JS/shell/package-manager files, matches a compromise
+external URL, reads request data, writes a credential into code (a well-known key shape, a private
+key, or a secret-named key or constant given a long literal), changes JS/shell/package-manager files, matches a compromise
 pattern, adds a known-vulnerable or unchecked version, or adds a high-risk plugin (file managers,
 code snippets, DB admin…). A WordPress core version that is known-vulnerable or unchecked holds the
 whole heal (nothing merges without it). Compromise signals mark the PR **🚨 Security review required**, ping Slack

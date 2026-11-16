@@ -133,6 +133,20 @@ const DELTA_RULES = [
   // Markup a hotfix rarely adds and a skimmer always does: script/iframe tags, external URLs.
   ['adds-script-tag', /<\s*(?:script|iframe)\b/i],
   ['external-url', /\bhttps?:\/\/|["']\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+/i], // protocol-relative only inside quotes: not a // comment
+  // A credential written into code lands in git history for good once it merges: well-known key shapes or a
+  // private-key block (case-sensitive), or a secret-named key/variable/constant given a long literal with a
+  // digit and no spaces or ':' (so labels, identifiers and URLs don't count). Bounded spans keep it linear.
+  ['credential', new RegExp([
+    String.raw`-----BEGIN[A-Z ]{0,20}PRIVATE ?KEY-----`, String.raw`\b[sr]k_live_[0-9A-Za-z]{16,}`,
+    String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`, String.raw`\bgh[pousr]_[A-Za-z0-9]{36,}`, String.raw`\bgithub_pat_[A-Za-z0-9_]{20,}`,
+    String.raw`\bxox[abpors]-[A-Za-z0-9-]{10,}`, String.raw`\bAIza[0-9A-Za-z_-]{35}`,
+  ].join('|'))],
+  ['credential', (() => {
+    // Starts at the keyword (a define() starts at 'define'): a name prefix tried at every position is quadratic-ish.
+    const key = String.raw`(?:secret|passw(?:or)?d|api_?key|access_?key|private_?key|auth_?key|(?:auth|access|bearer|api)_?token)[A-Za-z0-9_]{0,40}`;
+    const value = String.raw`['"](?=[^'"]{0,200}\d)[A-Za-z0-9+/=_.-]{16,200}['"]`;
+    return new RegExp(String.raw`(?:${key}['"]?\]?\s*=>?\s*|define\s*\(\s*['"][A-Za-z0-9_]{0,40}${key}['"]\s*,\s*)${value}`, 'i');
+  })()],
 ];
 // The DELTA_RULES an adopted root is also scanned with, raw per line (so a commented or never-called
 // eval/decode still shows): the obfuscation/execution signatures, not the ordinary-plugin noise.
@@ -207,7 +221,7 @@ function assessDiff(diff) {
       if (PHP_FILE_RE.test(file) && BACKTICK_RE.test(l)) hold('backtick', i + 1);
     });
     const joined = normalize(added.join('\n'));
-    for (const [rule, re] of DELTA_RULES) if (re.test(joined)) hold(rule);
+    for (const [rule, re] of DELTA_RULES) if (rule !== 'credential' && re.test(joined)) hold(rule); // credential: per line only
     for (const [rule, re] of RULES) if (re.test(joined) && !seen.has(rule)) hold(rule);
     removed.forEach((l, i) => { if (AUTH_CHECK_RE.test(l)) hold('removes-auth-check', i + 1); });
   }

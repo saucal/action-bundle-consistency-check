@@ -153,6 +153,34 @@ test('assessDiff: request-data and external-url hold every spelling, callbacks f
   }
 });
 
+test('assessDiff: credentials written into code hold (key shapes, private keys, secret-named literals)', () => {
+  const holds = (add) => assessDiff(diffOf('themes/client-theme/inc/config.php', { add })).holds.map((h) => h.rule);
+  // Built at run time so the repo never holds a string a secret scanner would flag.
+  const fake = (prefix, n, ch = 'a1') => prefix + ch.repeat(n).slice(0, n);
+  for (const l of [
+    `define('STRIPE_SECRET_KEY', '${fake('s' + 'k_live_', 24)}');`,
+    `$k = '${fake('AK' + 'IA', 16, 'Q7')}';`,
+    `$t = "${fake('gh' + 'p_', 36)}";`,
+    `$s = '${fake('xo' + 'xb-', 20)}';`,
+    `$g = '${fake('AI' + 'za', 35)}';`,
+    `$pem = "-----BEGIN ${'RSA PRIVATE'} KEY-----";`,
+    "define('AWS_SECRET_ACCESS_KEY', 'wJalrXUtnFEMIK7MDENGbPxRfiCYz9q2');",
+    "$settings['api_key'] = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "'client_secret' => 'Zq8Lw2Nf5Rt7Yh3Kp9Vm',",
+    "$db_password = 'S3cure.Passw0rd_2024';",
+  ]) assert.ok(holds([l]).includes('credential'), l);
+  // Labels, lookups, identifiers, URLs, generated values and placeholder phrases stay clean.
+  for (const l of [
+    "$label = __('Enter your password', 'my-plugin');",
+    "'password_field' => 'user_password_confirmation',",
+    "$api_key = get_option('myplugin_api_key');",
+    "$password = wp_generate_password(24);",
+    "define('AUTH_KEY', 'put your unique phrase here');",
+    "$asia = 'asiaticpopulation1234';",
+    "$x = 1;",
+  ]) assert.ok(!holds([l]).includes('credential'), l);
+});
+
 test('assessDiff: deltas to build-executable files hold (scripts and package-manager config)', () => {
   const rules = (file) => assessDiff(diffOf(file, { add: ['x = 1;'] })).holds.map((h) => h.rule);
   assert.ok(rules('plugins/x/build/webpack.config.js').includes('script-file'));

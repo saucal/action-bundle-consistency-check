@@ -470,6 +470,20 @@ test('tracked: an edit far below the shebang of an extensionless script still wa
   assert.ok(res.autoMerge.reasons.some((r) => /script-file/.test(r)), res.autoMerge.reasons.join(' | '));
 });
 
+test('tracked: a server edit that writes a live key into a theme file waits for review (credential)', async () => {
+  const sourceDir = tmpSource();
+  const treeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-'));
+  for (const dir of [sourceDir, treeRoot]) fs.mkdirSync(path.join(dir, 'themes/client-theme/inc'), { recursive: true });
+  const base = "<?php\ndefine('SITE_MODE', 'live');\n";
+  fs.writeFileSync(path.join(sourceDir, 'themes/client-theme/inc/config.php'), base);
+  // Built at run time so the repo never holds a string a secret scanner would flag.
+  fs.writeFileSync(path.join(treeRoot, 'themes/client-theme/inc/config.php'), base + `define('STRIPE_SECRET_KEY', '${'s' + 'k_live_' + 'a1'.repeat(12)}');\n`);
+  const res = await reconcileRun({ sourceDir, treeRoot, manifestText: 'themes/client-theme/inc/config.php\n',
+    isTracked: trackedIn(['themes/client-theme/inc/config.php']), resolvers: noResolve, runner: fakeRunner() });
+  assert.strictEqual(res.autoMerge.ok, false);
+  assert.ok(res.autoMerge.reasons.some((r) => /credential/.test(r)), res.autoMerge.reasons.join(' | '));
+});
+
 test('tracked: compromise signals -> nothing copied, held, no auto-merge', async () => {
   const f = trackedFixture("<?php // v1\n" + 'ev' + "al(base64_decode($_POST['x']));\n");
   const res = await reconcileRun({ ...f, resolvers: noResolve, runner: fakeRunner() });
