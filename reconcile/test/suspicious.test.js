@@ -174,6 +174,9 @@ test('assessDiff: credentials written into code hold (key shapes, private keys, 
     "$pwd = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
     `define('DB_PASSWORD', 'Tr0ub4dor${'$'}3!h{rse}:9');`, // single quotes never interpolate: '$', '{', ':' are password characters
     "'api_passphrase' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$dbpass = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "'smtpPass' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$userPwd = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
   ]) assert.ok(holds([l]).includes('credential'), l);
   // Labels, lookups, identifiers, URLs, generated values and placeholder phrases stay clean.
   for (const l of [
@@ -186,6 +189,7 @@ test('assessDiff: credentials written into code hold (key shapes, private keys, 
     "$password_hint = 'Use at least 8 chars 1 digit';", // spaced: the joined pass would read it as one token
     "$passenger_ref = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
     "$bypass_cache = 'myplugin-cache-2024-v2';",
+    "$compass_icon = 'dashicons-compass-2x-large';",
     "$secret_url = 'https://example.com/2024/endpoint';",
     "$auth_token = \"token_{$user_id}_v2_suffix\";",
     "$password = \"{$prefix}_password_2fa\";",

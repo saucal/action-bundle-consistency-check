@@ -145,7 +145,8 @@ const DELTA_RULES = [
   ].join('|'))],
   ['credential', (() => {
     // Starts at the keyword (a define() starts at 'define'): a name prefix tried at every position is quadratic-ish.
-    const key = String.raw`(?:secret|passw(?:or)?d|(?<![a-z])pass(?:phrase|code)?(?![a-z])|(?<![a-z])pwd(?![a-z])|api_?key|access_?key|private_?key|auth_?key|(?:auth|access|bearer|api)_?token)[A-Za-z0-9_]{0,40}`;
+    // 'pass' glued to a word is still a name ($dbpass, smtpPass); only the English words ending in it are not.
+    const key = String.raw`(?:secret|passw(?:or)?d|(?<!by|com|sur|over|tres|under|im)pass(?:phrase|code)?(?![a-z])|pwd(?![a-z])|api_?key|access_?key|private_?key|auth_?key|(?:auth|access|bearer|api)_?token)[A-Za-z0-9_]{0,40}`;
     const value = String.raw`(?:'(?![^']{0,300}:\/\/)(?=[^']{0,300}\d)[^'\s\\]{16,300}'|"(?=[^"]{0,300}\d)[^"\s:$\\{}]{16,300}")`;
     return new RegExp(String.raw`(?:${key}['"]?\]?\s*=>?\s*|define\s*\(\s*['"][A-Za-z0-9_]{0,40}${key}['"]\s*,\s*)${value}`, 'i');
   })()],
