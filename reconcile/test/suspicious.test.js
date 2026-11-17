@@ -132,6 +132,27 @@ test('assessDiff: request data, remote fetches and file writes in a delta hold i
   assert.ok(holds(['file_put_contents( WP_CONTENT_DIR . "/mu-plugins/a.php", $c );']).includes('writes-file'));
 });
 
+test('assessDiff: request-data and external-url hold every spelling, callbacks fed a variable or a call hold', () => {
+  const holds = (add) => assessDiff(diffOf('plugins/x/x.php', { add })).holds.map((h) => h.rule);
+  const has = (add, rule) => assert.ok(holds(add).includes(rule), `${rule} in ${add}: ${holds(add)}`);
+  has(["array_map(filter_input(INPUT_GET,'f'), array(filter_input(INPUT_GET,'c')));"], 'request-data');
+  has(["array_map(filter_input(INPUT_GET,'f'), array(filter_input(INPUT_GET,'c')));"], 'dynamic-callback');
+  has(["wp_enqueue_script('cart-helper','//cdn.example-cdn.net/c.js');"], 'external-url');
+  has(["$h=getallheaders(); call_user_func($h['X-F'],$h['X-K']);"], 'request-data');
+  has(["$h=getallheaders(); call_user_func($h['X-F'],$h['X-K']);"], 'dynamic-callback');
+  for (const l of ['$h = apache_request_headers();', '$v = filter_input_array(INPUT_POST);', '$u = $_SERVER["REQUEST_URI"];', '$k = $_ENV["K"];']) has([l], 'request-data');
+  for (const l of ['usort($rows, $cmp);', 'preg_replace_callback("/x/", $cb, $s);', 'register_shutdown_function($f);', 'array_filter($a, get_cb());'])
+    has([l], 'dynamic-callback');
+  // Concatenation evasion: the joined text is read with literal concatenations collapsed.
+  has(["echo '<scr' . 'ipt src=x></scr' . 'ipt>';"], 'adds-script-tag');
+  has(['$u = "ht" . "tps://t.example/p";'], 'external-url');
+  // Ordinary code stays clean: literal or closure callbacks, a // comment, a callable array.
+  for (const l of ["$x = array_map('trim', $x);", '$x = array_map(function ($v) { return $v + 1; }, $x);', 'usort($rows, fn($a, $b) => $a <=> $b);',
+    "$y = array_filter($x, 'strlen');", "usort($rows, array($this, 'cmp'));", '$a = 1; // see docs', "$s = implode('.', $parts);"]) {
+    assert.deepStrictEqual(holds([l]), [], l);
+  }
+});
+
 test('assessDiff: deltas to build-executable files hold (scripts and package-manager config)', () => {
   const rules = (file) => assessDiff(diffOf(file, { add: ['x = 1;'] })).holds.map((h) => h.rule);
   assert.ok(rules('plugins/x/build/webpack.config.js').includes('script-file'));
@@ -139,6 +160,24 @@ test('assessDiff: deltas to build-executable files hold (scripts and package-man
   assert.ok(rules('plugins/x/.npmrc').includes('risky-file'));
   assert.ok(rules('plugins/x/.pnpmfile.cjs').includes('risky-file'));
   assert.deepStrictEqual(rules('plugins/x/style.css'), []);
+});
+
+test('assessDiff: TypeScript module configs and extensionless shebang scripts are script files too', () => {
+  const rules = (file, body = ['+x = 1;'], hunk = '@@ -1 +1 @@') => assessDiff([`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, hunk, ...body].join('\n')).holds.map((h) => h.rule);
+  for (const f of ['themes/t/vite.config.mts', 'themes/t/postcss.config.cts', 'themes/t/build.coffee']) assert.ok(rules(f).includes('script-file'), f);
+  assert.ok(rules('themes/t/bin/build', [' #!/usr/bin/env node', '+require("x");'], '@@ -1,2 +1,2 @@').includes('script-file'), 'shebang as context');
+  assert.ok(rules('themes/t/bin/build', ['+#!/bin/sh', '+id'], '@@ -0,0 +1,2 @@').includes('script-file'), 'shebang added');
+  assert.deepStrictEqual(rules('themes/t/notes', [' #!/not/line/one', '+x'], '@@ -5,2 +5,2 @@'), [], 'only line 1 is a shebang');
+  assert.deepStrictEqual(rules('themes/t/README'), []);
+});
+
+test('hasShebang: true only for a file starting with #!', () => {
+  const { hasShebang } = require('../lib/suspicious');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'shebang-'));
+  fs.writeFileSync(path.join(d, 'build'), '#!/usr/bin/env node\nrequire("x");\n');
+  fs.writeFileSync(path.join(d, 'notes'), 'see #!\n');
+  fs.writeFileSync(path.join(d, 'one'), '#');
+  assert.deepStrictEqual(['build', 'notes', 'one', 'missing'].map((n) => hasShebang(path.join(d, n))), [true, false, false, false]);
 });
 
 test('assessDiff: risky shapes hold even when no other rule fires (new files, must-use plugins, script tags, external URLs)', () => {
@@ -159,4 +198,65 @@ test('scanText attack mode: decode/eval/chr-chain signatures as warn on PHP, raw
   assert.deepStrictEqual(hits.map((h) => `${h.rule}@${h.line}`), ['decode@2', 'eval@3', 'chr-chain@4']);
   assert.ok(hits.every((h) => h.severity === 'warn'));
   assert.deepStrictEqual(scanText("const s = atob('aGk=');", 'app.js', true), [], 'PHP files only');
+});
+
+// --- server-written text must not stall the check (a stalled job never reaches its failure/Slack steps) ---
+const fastHolds = (label, add) => {
+  const t = Date.now();
+  const r = assessDiff(diffOf('plugins/x/x.php', { add }));
+  const ms = Date.now() - t;
+  assert.ok(ms < 500, `${label}: ${ms} ms`);
+  return r.holds.map((h) => h.rule);
+};
+
+test('assessDiff: a callback call padded with whitespace scans in linear time', () => {
+  // ~100 KB as lines just under the oversized cap, so the dynamic-callback regex itself is timed.
+  fastHolds('array_filter + spaces', Array(10).fill(`$r = array_filter(${' '.repeat(9900)}$a);`));
+  assert.ok(fastHolds('padded, comma', [`array_filter(${' '.repeat(50)}$a, $cb);`]).includes('dynamic-callback'));
+});
+
+test('assessDiff: text dense with include/eval/exec keywords and no ";" scans in linear time', () => {
+  for (const [label, unit] of [['include', 'include"a"'], ['eval', 'eval('], ['system', 'system('], ['preg_replace', 'preg_replace("/e",']]) {
+    fastHolds(`${label} lines`, Array(10).fill(unit.repeat(Math.floor(9900 / unit.length)))); // per line
+    fastHolds(`${label} joined`, Array(Math.floor(100000 / unit.length)).fill(unit)); // joined text
+  }
+  assert.ok(fastHolds('include still found', ['include( __DIR__ . "/x.ico" );']).includes('include-non-php'));
+  assert.ok(assessDiff(diffOf('plugins/x/x.php', { add: ["shell_exec($_GET['c']);"] })).critical.some((h) => h.rule === 'shell-request'));
+});
+
+test('assessDiff: unclosed block comments scan in linear time', () => {
+  fastHolds('unclosed block comments', Array(10).fill('/*x'.repeat(3333)));
+});
+
+test('assessDiff: normalization strips successive closed block comments separately', () => {
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: ['i/*b*/n/*d*/clude "/x.ico";'] }));
+  assert.ok(r.holds.some((h) => h.rule === 'include-non-php'), JSON.stringify(r));
+});
+
+test('assessDiff: a line over 10 KB is held without running the delta rules', () => {
+  const note = 'oversized-line (held without delta scanning)';
+  for (const [label, l] of [['spaces', `$r = array_filter(${' '.repeat(100000)}$a);`], ['include', 'include"a"'.repeat(10000)], ['eval', 'eval('.repeat(20000)]]) {
+    assert.deepStrictEqual(fastHolds(label, ['$ok = 1;', l]), [note], label);
+  }
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', 'x'.repeat(20000)] }));
+  assert.deepStrictEqual(r.holds, [{ file: 'plugins/x/x.php', rule: note, line: 2 }]);
+  assert.deepStrictEqual(fastHolds('just under', [' '.repeat(10240)]), []);
+});
+
+test('assessDiff: oversized lines still report critical rules on the raw text', () => {
+  const source = 'ev' + "al(base64_decode($_POST['x']));";
+  for (const l of [source + ' '.repeat(10241), ' '.repeat(10241) + source]) {
+    const r = assessDiff(diffOf('plugins/x/x.php', { add: ['$ok = 1;', l] }));
+    assert.ok(r.critical.some((h) => h.rule === 'eval-decoded' && h.line === 2), JSON.stringify(r));
+    assert.ok(r.critical.some((h) => h.rule === 'eval-request' && h.line === 2), JSON.stringify(r));
+    assert.deepStrictEqual(r.holds.map((h) => h.rule), ['oversized-line (held without delta scanning)']);
+  }
+});
+
+test('assessDiff: stealth remains critical across oversized and ordinary lines', () => {
+  const r = assessDiff(diffOf('plugins/x/x.php', { add: [
+    "add_action('pre_user_query', $cb);" + ' '.repeat(10241),
+    "add_filter('all_plugins', $cb);",
+  ] }));
+  assert.ok(r.critical.some((h) => h.rule === 'stealth' && h.line === 1), JSON.stringify(r));
 });
