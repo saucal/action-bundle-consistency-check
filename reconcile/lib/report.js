@@ -114,14 +114,16 @@ const remainsFailure = (left, pr, url) => `Reconciliation ran, but drift remains
 const heldNote = (reasonLines) => `**Auto-merge:** held for a human${reasonLines ? `:\n\n${reasonLines}` : " — see “Repo changes this PR can't make”."}\n\n`;
 
 /**
- * Banner of a PR built on the last deployed commit. Only the repo changes that need a decision keep
- * the check failing, so the next Deploy does not go through either; deferred/superseded ones don't.
+ * Banner of the held PR built on the last deployed commit (owner, 2026-11-10, G65): it reviews the heal
+ * alone, into the temporary selfheal-base-<ref> branch at that commit; the engineers' PR follows its merge.
+ * Only the repo changes that need a decision keep the check failing; deferred/superseded ones don't.
  */
 const undeployedNote = (ref, pending, classified) => {
   const open = classified.filter((c) => !c.recoverable && c.category !== 'ignorable' && !LATER.has(c.category)).length;
   return `**Undeployed commits:** \`${ref}\` has ${pending.commits} commit(s) not deployed yet (since \`${pending.since.slice(0, 7)}\`). `
-  + `This PR makes the repo changes on that commit first (the server's state, which the built repo records on merge), then merges those ${pending.commits} on top: they stay undeployed until the next Deploy, `
-  + (open ? `which the consistency check still stops until the ${open} repo change(s) that need a decision are made.\n\n` : 'which then goes through.\n\n');
+  + `This PR reviews only the heal: it is built on that last deployed commit and merges into \`selfheal-base-${ref}\`, a temporary branch at it, so its diff is the server's changes alone. `
+  + `Merging it records the heal as deployed (the server already runs it; nothing is deployed). The engineers' PR for those ${pending.commits} commit(s) follows: assigned to their authors, it merges them on top of the heal, and merging it deploys them`
+  + (open ? `, once the ${open} repo change(s) that need a decision are made.\n\n` : '.\n\n');
 };
 
 /** The heal commit's explanation: only a PR the gate merges was verified before merging. */

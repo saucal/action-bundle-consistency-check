@@ -10,7 +10,9 @@
  * An open PR's head only ever moves forward: no force push, so the old head stays an ancestor.
  */
 
-const isHealSubject = (subject) => /^Reconcile server drift on /.test(String(subject || ''));
+// Also the merge-button merge of a reviewed heal PR (G65: m1 = merge(D, r1) on selfheal-base-<ref>), the
+// engineers' PR head then: it is the heal the built repo records, not its 1st parent D.
+const isHealSubject = (subject) => /^Reconcile server drift on |^Merge pull request #\d+ from \S+\/reconciliation-/.test(String(subject || ''));
 
 /** The heal a PR head carries: the head itself (RM layout) or its 1st parent (FT layout). */
 const healOf = (head, subject, parent0) => (isHealSubject(subject) ? head : parent0 || '');

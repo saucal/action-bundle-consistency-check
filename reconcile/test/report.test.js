@@ -114,19 +114,23 @@ test('held line: reasons as a list after a colon, or a pointer to the body', () 
   assert.match(heldNote(''), /^\*\*Auto-merge:\*\* held for a human — see “Repo changes this PR can't make”\.\n\n$/);
 });
 
-test('undeployed banner promises the Deploy goes through only when nothing is left to decide', () => {
+// G65 (owner, 2026-11-10): the held PR reviews the heal alone, into selfheal-base-<ref>; the engineers' PR follows.
+test('undeployed banner: the held PR reviews only the heal and names the engineers\' PR that follows', () => {
   const pending = { commits: 2, since: 'a'.repeat(40) };
-  assert.match(undeployedNote('main', pending, []), /`main` has 2 commit\(s\) not deployed yet \(since `aaaaaaa`\).*until the next Deploy, which then goes through\.\n\n$/);
-  const open = undeployedNote('main', pending, classified);
-  assert.doesNotMatch(open, /goes through/);
-  assert.match(open, /which the consistency check still stops until the 2 repo change\(s\) that need a decision are made\./);
+  const none = undeployedNote('main', pending, []);
+  assert.match(none, /`main` has 2 commit\(s\) not deployed yet \(since `aaaaaaa`\)\. This PR reviews only the heal/);
+  assert.match(none, /merges into `selfheal-base-main`, a temporary branch at it, so its diff is the server's changes alone\./);
+  assert.match(none, /Merging it records the heal as deployed \(the server already runs it; nothing is deployed\)\./);
+  assert.match(none, /The engineers' PR for those 2 commit\(s\) follows: assigned to their authors, it merges them on top of the heal, and merging it deploys them\.\n\n$/);
+  assert.doesNotMatch(none, /on top: they stay undeployed|then merges those/);
+  assert.match(undeployedNote('main', pending, classified), /deploys them, once the 2 repo change\(s\) that need a decision are made\.\n\n$/);
 });
 
-test('undeployed banner: deferred and superseded drift does not stop the next Deploy', () => {
+test('undeployed banner: deferred and superseded drift is not a decision', () => {
   const pending = { commits: 2, since: 'a'.repeat(40) };
   const later = [{ key: 'query-monitor', category: 'deferred', recoverable: false }, { key: 'akismet', category: 'superseded', recoverable: false }];
-  assert.match(undeployedNote('main', pending, later), /which then goes through\.\n\n$/);
-  assert.match(undeployedNote('main', pending, [...later, ...classified]), /until the 2 repo change\(s\) that need a decision are made\./);
+  assert.match(undeployedNote('main', pending, later), /deploys them\.\n\n$/);
+  assert.match(undeployedNote('main', pending, [...later, ...classified]), /once the 2 repo change\(s\) that need a decision are made\./);
 });
 
 test('heal commit says "verified" only when the gate merges it', () => {
