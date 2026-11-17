@@ -19,12 +19,14 @@ const engineerLogins = (lines, me = '') => [...new Set(String(lines).split('\n')
   .filter((l) => /^[A-Za-z0-9-]+(\[bot\])?$/.test(l) && l !== me && l !== 'web-flow' && !l.endsWith('[bot]')))];
 
 /** The PR body's opening: who it is for, what is recorded, and what a Deploy does meanwhile. */
-const tipNote = (ref, { commits, since, rm, logins, joined = false }) => [
+const tipNote = (ref, { commits, since, rm, logins, joined = false, reviewed = '' }) => [
   `## ⚠️ ${commits} commit(s) on \`${ref}\` were not deployed when the server was healed`, '',
   `${logins.length ? `For ${logins.map((l) => `@${l}`).join(', ')}: these are your commits.` : '**No GitHub user was found for these commits: assign this PR by hand.**'} `
   + (joined
     ? `New server drift joined this PR: it is healed on the heal recorded before (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `
-    : `The server's drift is healed on the last deployed commit (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `)
+    : reviewed
+      ? `The server's drift was healed on the last deployed commit (\`${since.slice(0, 7)}\`) and reviewed in #${reviewed}; its merge \`${rm.slice(0, 7)}\` is what the built repo records as deployed once a build of it reproduces the server. `
+      : `The server's drift is healed on the last deployed commit (\`${since.slice(0, 7)}\`) as \`${rm.slice(0, 7)}\`, which the built repo records as deployed once a build of it reproduces the server. `)
   + `This PR merges your undeployed commits on top of that heal. **It is never merged automatically**: merging it runs a normal Deploy of \`${ref}\` that ships them.`, '',
   `Until it merges, a Deploy of \`${ref}\` is refused (it would undo the heal). New server drift that needs no review joins this PR (a comment says what joined); drift that needs a review waits for this merge. Push further work to \`${ref}\` as usual: it ships with this merge. `
   + 'If the heal left items on the server for review (below), that Deploy is refused on them until they are committed or ignored.', '', ''].join('\n');
@@ -86,4 +88,34 @@ const keptReplacesNote = (body) => {
   return m ? m[0] : '';
 };
 
-module.exports = { tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote };
+/**
+ * Owner decision (2026-11-10, G65): a held heal while commits are undeployed is reviewed on its own. PR 1
+ * merges the heal r1 (built on the deployed commit D) into this temporary branch, created at D, so its
+ * diff is the heal alone; its merge m1 = merge(D, r1) is then recorded and the engineers' PR follows.
+ */
+const baseBranchOf = (ref) => `selfheal-base-${ref}`;
+
+/**
+ * Is the base branch's head `at` the reviewed heal to record, given the newest merged PR 1 (`merge` its
+ * merge_commit_sha, `prHead` its head)? Only PR 1's own merge commit: 2 parents, D (`since`) then the
+ * merged head, which is a heal commit on D; its tree is the heal this run builds on D again (the server
+ * still runs it); no compromise signals (those are never recorded unattended). Its subject must be the merge
+ * button's default (`title`: "Merge pull request #N from <owner>/reconciliation-<ref>"): Deploy's guard and healOf
+ * recognise a recorded heal only by it, so an edited title would let the next push deploy without the heal.
+ * @returns {{ ok: true } | { why: string } | null} null: the base does not hold that merge at all
+ */
+const reviewVerdict = ({ at, merge, onTop = false, parents = [], prHead, prParent = '', prSubject = '', subject = '', title = '', since, tree, healTree, critical = false }) => {
+  if (!at || !merge) return null;
+  if (at !== merge) return onTop ? { why: `commits were pushed to the base branch on top of its merge ${merge.slice(0, 7)}` } : null;
+  if (parents.length < 2) return { why: 'it is not a merge commit (a squash or rebase merge): the record must be a merge of the deployed commit and the heal' };
+  if (parents.length > 2) return { why: `its merge commit has ${parents.length} parents: it brings in more than this PR's heal` };
+  if (parents[0] !== since) return { why: `the last deployed commit is ${since.slice(0, 7)} now, not the ${parents[0].slice(0, 7)} it was merged on` };
+  if (parents[1] !== prHead) return { why: "its merge commit does not merge this PR's head" };
+  if (prParent !== since || !/^Reconcile server drift on .*\[commit only\]/.test(prSubject)) return { why: "this PR's head is not a self-heal commit built on the last deployed commit" };
+  if (!title || !String(subject).startsWith(title)) return { why: `its merge commit's title was edited: it must start with "${title}", the title Deploy recognises a self-heal by` };
+  if (critical) return { why: 'the heal carries compromise signals, which are never recorded unattended' };
+  if (!tree || tree !== healTree) return { why: 'the server changed since the review: it no longer runs this heal' };
+  return { ok: true };
+};
+
+module.exports = { baseBranchOf, reviewVerdict, tipBranchOf, TIP_LABEL, tipTitle, engineerLogins, tipNote, joinedComment, recoveredNote, tipPrVerdict, recoverable, parseTipPrs, keptReplacesNote };

@@ -1,0 +1,505 @@
+'use strict';
+// G65 (owner, 2026-11-10), index.js end to end against a local origin and a fake gh: a held heal while
+// an engineer's commit is undeployed. Run 1 opens PR 1 (reconciliation-main, head r1 on D, base
+// selfheal-base-main created at D). The reviewer merges it (m1 = merge(D, r1)). Run 2 records m1 (build-sha,
+// auto-merge for the verify job) and opens the engineers' PR from selfheal-undeployed-main into main, routed
+// to the commit's author, then deletes selfheal-base-main.
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync, spawnSync } = require('child_process');
+const { makeProject } = require('../helpers/make-project');
+const { stageServer, deriveDrift } = require('../helpers/stage-server');
+
+const FAKE_GH = `#!/usr/bin/env node
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync(process.env.GH_LOG, JSON.stringify(a) + '\\n');
+const rules = JSON.parse(fs.readFileSync(process.env.GH_RULES, 'utf8'));
+const i = rules.findIndex(([re]) => new RegExp(re).test(a.join(' ')));
+const hit = rules[i];
+let v = hit ? hit[1] : '';
+if (Array.isArray(v)) { // answers in turn, the last one repeated
+  const f = process.env.GH_RULES + '.' + i; const n = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0;
+  fs.writeFileSync(f, String(n + 1)); v = v[Math.min(n, v.length - 1)];
+}
+process.stdout.write(v);
+process.exit(hit && hit[2] ? hit[2] : 0);
+`;
+
+const G = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { cwd, encoding: 'utf8' }).trim();
+const plug = (dir, slug, ret) => {
+  fs.mkdirSync(path.join(dir, 'plugins', slug), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plugins', slug, `${slug}.php`), `<?php\n/* Plugin Name: ${slug} */\nfunction ${slug}() { return ${ret}; }\n`);
+};
+const tipLists = [['selfheal-undeployed-main&state=(open|closed)&per_page', '[]']];
+// The current cycle's merge m: the base holds it (any compare from m), main and the record (`settled`) don't.
+// Invariant 3: one base-head read and one merged-PR listing per run, shared by every base decision.
+const oneRead = (res) => {
+  assert.strictEqual(res.calls.filter((c) => /git\/ref\/heads\/selfheal-base-main -q/.test(c)).length, 1, res.why);
+  assert.ok(res.calls.filter((c) => /pulls\?base=selfheal-base-main&state=closed/.test(c)).length <= 1, res.why);
+};
+const cycle = (m, ...settled) => [[`compare/${m}\\.\\.\\.(main|${settled.join('|')}) `, 'diverged'], [`compare/${m}\\.\\.\\.`, 'ahead']];
+
+/** index.js against ws's fake gh: run(n, rules, extra env) -> { r, calls, outputs, why }. */
+const runner = ({ ws, proj, server, merge }) => {
+  if (!fs.existsSync(path.join(ws, 'bin'))) {
+    fs.mkdirSync(path.join(ws, 'bin'));
+    fs.writeFileSync(path.join(ws, 'bin', 'gh'), FAKE_GH, { mode: 0o755 });
+  }
+  return (n, rules, extra = {}) => {
+    const log = path.join(ws, `gh-${n}.log`);
+    const out = path.join(ws, `out-${n}`);
+    fs.writeFileSync(out, '');
+    for (const f of fs.readdirSync(ws)) if (f.startsWith('rules.json')) fs.rmSync(path.join(ws, f));
+    fs.writeFileSync(path.join(ws, 'rules.json'), JSON.stringify(rules));
+    const env = { ...process.env, PATH: path.join(ws, 'bin') + path.delimiter + process.env.PATH, GH_LOG: log, GH_RULES: path.join(ws, 'rules.json'),
+      RUNNER_TEMP: ws, GITHUB_OUTPUT: out, REPO: 'o/r', REF: 'main', SOURCE_DIR: proj, BUILT_DIR: server, RUN_URL: 'https://run',
+      MANIFEST_PATH: path.join(ws, 'manifest.txt'), DIFF_PATH: path.join(ws, 'diff.txt'), RECONCILE_MERGE: merge,
+      GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+    env.GITHUB_STEP_SUMMARY = path.join(ws, `summary-${n}`); fs.writeFileSync(env.GITHUB_STEP_SUMMARY, '');
+    delete env.SAPP_SERVER;
+    Object.assign(env, extra);
+    // The YARA tier's test stub (test/helpers/yara-stub.js), when present, must reach the child run too.
+    const stub = path.join(__dirname, '..', 'helpers', 'yara-stub.js');
+    const pre = fs.existsSync(stub) ? ['--require', stub] : [];
+    const r = spawnSync(process.execPath, [...pre, path.join(__dirname, '..', '..', 'index.js')], { env, encoding: 'utf8' });
+    const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).join(' ')) : [];
+    const outputs = {};
+    for (const m of fs.readFileSync(out, 'utf8').matchAll(/^([\w-]+)<<(\S+)\n([\s\S]*?)\n\2$/gm)) outputs[m[1]] = m[3];
+    return { r, calls, outputs, why: `${r.stdout}\n${r.stderr}\n${calls.join('\n')}` };
+  };
+};
+
+test('held heal + undeployed commit: PR 1 into selfheal-base-main, then its merge is recorded and routed to the engineers', () => {
+  const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-'));
+  try {
+    // D: the project with a committed custom plugin (tracked: healed by copying the server's version).
+    fs.writeFileSync(path.join(proj, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n!plugins/customx/\n');
+    fs.mkdirSync(path.join(proj, 'plugins/customx'), { recursive: true });
+    fs.writeFileSync(path.join(proj, 'plugins/customx/customx.php'), '<?php\n/* Plugin Name: customx */\nfunction customx() { return 1; }\n');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site\n');
+    G(proj, 'init', '-q', '-b', 'main'); G(proj, 'add', '-A'); G(proj, 'commit', '-qm', 'D');
+    const D = G(proj, 'rev-parse', 'HEAD');
+    const origin = path.join(ws, 'origin.git');
+    G(ws, 'init', '-q', '--bare', origin);
+    G(proj, 'remote', 'add', 'origin', origin); G(proj, 'push', '-q', 'origin', 'main');
+    // The server: D's build plus a merchant edit to the custom plugin; the built repo records D.
+    const server = stageServer(proj, (sv) => fs.writeFileSync(path.join(sv, 'plugins/customx/customx.php'), '<?php\n/* Plugin Name: customx */\nfunction customx() { return 2; }\n'));
+    const { manifestText, contentDiffText } = deriveDrift(proj, server);
+    G(server, 'init', '-q'); G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${D}`);
+    fs.writeFileSync(path.join(ws, 'manifest.txt'), manifestText);
+    fs.writeFileSync(path.join(ws, 'diff.txt'), contentDiffText);
+    // u1: an engineer's commit on main, not deployed.
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site, by an engineer\n');
+    G(proj, 'commit', '-qam', 'u1'); G(proj, 'push', '-q', 'origin', 'main');
+    const U = G(proj, 'rev-parse', 'HEAD');
+    G(proj, 'checkout', '-q', D); // the check's checkout is wherever; index.js recreates its branches from origin
+
+    const run = runner({ ws, proj, server, merge: '0' });
+
+    // Run 1: held (auto-merge off) with u1 undeployed -> PR 1.
+    const one = run(1, [...tipLists, ['pr create', 'https://github.test/o/r/pull/12']]);
+    const at1 = (re) => one.calls.findIndex((c) => re.test(c));
+    assert.ok(at1(new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`)) >= 0, one.why);
+    assert.ok(at1(/pr create -R o\/r --head reconciliation-main --base selfheal-base-main /) > at1(/git\/refs -f ref=refs\/heads\/selfheal-base-main/), one.why);
+    assert.ok(!one.calls.some((c) => /selfheal-undeployed-main --base|issues\/\d+\/assignees/.test(c)), one.why);
+    const r1 = G(origin, 'rev-parse', 'reconciliation-main');
+    assert.strictEqual(G(origin, 'rev-parse', `${r1}^`), D, 'PR 1 head is r1 on D');
+    assert.strictEqual(G(origin, 'diff', '--name-only', D, r1), 'plugins/customx/customx.php', 'PR 1 diff is the heal alone');
+    assert.match(G(origin, 'log', '-1', '--format=%s', r1), /^Reconcile server drift on main \[commit only\]$/);
+    assert.strictEqual(one.outputs['auto-merge'], 'false', one.why);
+    assert.strictEqual(one.outputs['build-sha'] || '', '', one.why);
+    assert.ok(!one.outputs['undeployed-pr'], one.why);
+    assert.match(fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8'), /This PR reviews only the heal.*`selfheal-base-main`/);
+    assert.ok(!G(origin, 'branch', '--list', 'selfheal-undeployed-main'));
+
+    const del = (calls) => calls.findIndex((c) => /-X DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/.test(c));
+    const create = (calls) => calls.findIndex((c) => new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`).test(c));
+    const prOne = (calls) => calls.findIndex((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c));
+    const openPr1 = ['pulls\\?head=o:reconciliation-main&state=open -q \\.\\[0\\] //', JSON.stringify({ number: 12, body: '' })];
+
+    // Run 1b: the next check while PR 1 waits: updated in place (same head, no push, base kept at D).
+    const oneB = run('1b', [...tipLists, ['git/ref/heads/selfheal-base-main', D], ['pulls\\?base=selfheal-base-main&state=open', '1'], openPr1]);
+    assert.ok(oneB.calls.some((c) => /PATCH repos\/o\/r\/pulls\/12 .* -f base=selfheal-base-main$/.test(c)), oneB.why);
+    assert.ok(!oneB.calls.some((c) => /pr create|git\/refs -f ref=|-X DELETE/.test(c)), oneB.why);
+    assert.match(oneB.r.stdout, /reconciliation-main already holds this reconciliation/);
+    assert.strictEqual(G(origin, 'rev-parse', 'reconciliation-main'), r1);
+
+    // Run 1c: PR 1 closed unmerged: its base (at D, in main, no PR targeting it) is deleted, created again at D,
+    // and a NEW PR opens on it (the closed one is never reused).
+    const oneC = run('1c', [...tipLists, ['git/ref/heads/selfheal-base-main', [D, '']], ['pulls\\?base=selfheal-base-main&state=open', '0'],
+      [`compare/${D}\\.\\.\\.main`, 'ahead'], ['pr create', 'https://github.test/o/r/pull/15']]);
+    assert.ok(del(oneC.calls) >= 0 && create(oneC.calls) > del(oneC.calls) && prOne(oneC.calls) > create(oneC.calls), oneC.why);
+    assert.ok(!oneC.calls.some((c) => /pulls\/12/.test(c)), oneC.why);
+
+    // The reviewer merges PR 1 (merge button: a 2-parent merge commit on selfheal-base-main).
+    G(origin, 'branch', 'selfheal-base-main', D);
+    const tmp = path.join(ws, 'review');
+    G(ws, 'clone', '-q', '-b', 'selfheal-base-main', origin, tmp);
+    G(tmp, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', `origin/reconciliation-main`);
+    G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1 = G(origin, 'rev-parse', 'selfheal-base-main');
+    const merged12 = [`pulls\\?base=selfheal-base-main&state=closed`, JSON.stringify({ number: 12, head: r1, merge: m1 })];
+    const rejected = (runRes, num, why) => {
+      const at = (re) => runRes.calls.findIndex((c) => re.test(c));
+      assert.ok(del(runRes.calls) >= 0 && create(runRes.calls) > del(runRes.calls) && prOne(runRes.calls) > create(runRes.calls), runRes.why);
+      assert.ok(!runRes.outputs['build-sha'] && !runRes.outputs['undeployed-pr'], runRes.why);
+      assert.ok(!runRes.calls.some((c) => /force=true/.test(c)), runRes.why);
+      // ADV3-M1: traced on PR 1 before its base goes; the new PR's number follows once it exists.
+      const said = at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because ${why.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. Nothing was recorded; \`selfheal-base-main\` \\(at [0-9a-f]{7}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`));
+      assert.ok(said >= 0 && said < del(runRes.calls), runRes.why);
+      assert.ok(at(new RegExp(`issues/12/comments -f body=PR #${num} is the new review of this heal\\. From`)) > prOne(runRes.calls), runRes.why);
+    };
+
+    // Run 2a: the server changed again after the review: m1 is not what it runs, so nothing is recorded; the
+    // stale base is dropped (no fast-forward from m1 to D) and a NEW PR 1 reviews the heal built on D.
+    const php = path.join(server, 'plugins/customx/customx.php');
+    const reviewedPhp = fs.readFileSync(php, 'utf8');
+    fs.writeFileSync(php, reviewedPhp.replace('return 2', 'return 3'));
+    fs.writeFileSync(path.join(ws, 'diff.txt'), deriveDrift(proj, server).contentDiffText);
+    const twoAFailedComment = run('2a-comment-failed', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1],
+      ['PATCH repos/o/r/git/refs/heads/selfheal-base-main', 'not a fast forward', 1], merged12,
+      ['issues/12/comments', 'HTTP 502', 1], ['pr create', 'HTTP 502', 1]]);
+    assert.strictEqual(twoAFailedComment.r.status, 1, twoAFailedComment.why);
+    assert.match(twoAFailedComment.r.stdout, /Could not post the rejection on PR #12: selfheal-base-main .* kept; the next check will retry/);
+    assert.strictEqual(twoAFailedComment.calls.filter((c) => /issues\/12\/comments/.test(c)).length, 1, twoAFailedComment.why);
+    assert.ok(del(twoAFailedComment.calls) < 0 && create(twoAFailedComment.calls) < 0 && prOne(twoAFailedComment.calls) < 0, twoAFailedComment.why);
+    assert.ok(!twoAFailedComment.outputs['build-sha'], twoAFailedComment.why);
+    // The next check can still judge the original merge and successfully explain its rejection.
+    const twoA = run('2a', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
+      merged12, ['pr create', 'https://github.test/o/r/pull/14']]);
+    rejected(twoA, 14, 'the server changed since the review: it no longer runs this heal');
+    fs.writeFileSync(php, reviewedPhp);
+    fs.writeFileSync(path.join(ws, 'diff.txt'), contentDiffText);
+
+    // Run 2b: a commit pushed to selfheal-base-main on top of m1: not PR 1's merge any more, rejected the same way.
+    G(tmp, 'commit', '-q', '--allow-empty', '-m', 'stray'); G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1plus = G(origin, 'rev-parse', 'selfheal-base-main');
+    const twoB = run('2b', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1plus], [`PATCH repos/o/r/git/refs/heads/selfheal-base-main`, 'not a fast forward', 1],
+      merged12, ['pr create', 'https://github.test/o/r/pull/16']]);
+    // UF3-I2: the stray commit goes with the base, so the comment and the log name it and the base head.
+    const stray = `commits were pushed to the base branch on top of its merge ${m1.slice(0, 7)} (base head ${m1plus}: ${m1plus} "stray")`;
+    rejected(twoB, 16, stray);
+    assert.ok(twoB.r.stdout.includes(`::warning::PR #12's merge was not accepted as the reviewed heal: ${stray}.`), twoB.why);
+    assert.ok(twoB.r.stdout.includes(`Deleted selfheal-base-main (at ${m1plus}).`), twoB.why);
+
+    // Run 2c: PR 1 merged during the run (git saw the base at D, GitHub now says m1): kept, no PR, the next
+    // check takes the merge. 2d: the API could not answer about the merged PR: kept the same way.
+    G(origin, 'update-ref', 'refs/heads/selfheal-base-main', D);
+    const twoC = run('2c', [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1], merged12]);
+    assert.ok(del(twoC.calls) < 0 && create(twoC.calls) < 0 && !twoC.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoC.why);
+    assert.match(twoC.r.stdout, /could not be judged this run/);
+    G(origin, 'update-ref', 'refs/heads/selfheal-base-main', m1);
+    const twoD = run('2d', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], [`pulls\\?base=selfheal-base-main&state=closed`, 'HTTP 502', 1]]);
+    assert.ok(del(twoD.calls) < 0 && !twoD.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoD.why);
+    assert.match(twoD.r.stdout, /could not be judged this run/);
+    assert.ok(!G(origin, 'branch', '--list', 'selfheal-undeployed-main'));
+
+    // A base holding PR 1's unrecorded merge m1 is never deleted silently: PR 1 is told why first.
+    const holds = [...cycle(m1, D),
+      ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=open', '0'], merged12];
+    const told = (runRes, why) => {
+      const c = runRes.calls.findIndex((x) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not recorded as the reviewed heal: ${why} \`selfheal-base-main\` is deleted\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(x));
+      assert.ok(c >= 0 && del(runRes.calls) > c, runRes.why);
+    };
+    // Run 2e: main already carries the heal through a hand commit (the merged path): nothing to record from m1.
+    G(tmp, 'checkout', '-q', '-B', 'hand', 'origin/main');
+    fs.mkdirSync(path.join(tmp, 'plugins/customx'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'plugins/customx/customx.php'), reviewedPhp);
+    G(tmp, 'commit', '-qam', 'hand fix'); G(tmp, 'push', '-q', 'origin', 'hand:main');
+    const twoEFailedComment = run('2e-comment-failed', [...tipLists, ...holds, ['issues/12/comments', 'HTTP 502', 1]]);
+    assert.strictEqual(twoEFailedComment.r.status, 1, twoEFailedComment.why);
+    assert.ok(del(twoEFailedComment.calls) < 0, twoEFailedComment.why);
+    assert.match(twoEFailedComment.r.stdout, /Could not post the explanation on PR #12: selfheal-base-main .* kept; the next check will retry/);
+    const twoE = run('2e', [...tipLists, ...holds]);
+    told(twoE, '`main` already carries every change it proposed\\.');
+    assert.ok(!twoE.calls.some((c) => /pr create|PATCH repos\/o\/r\/git\/refs/.test(c)), twoE.why);
+    G(origin, 'update-ref', 'refs/heads/main', U);
+    // Run 2f: the check is green (server back to the record D) while m1 waits: told, then the base goes.
+    const twoFFailedComment = run('2f-comment-failed', [...tipLists, ...holds, ['issues/12/comments', 'HTTP 502', 1]], { CLEANUP_ONLY: '1' });
+    assert.strictEqual(twoFFailedComment.r.status, 1, twoFFailedComment.why);
+    assert.ok(del(twoFFailedComment.calls) < 0, twoFFailedComment.why);
+    assert.match(twoFFailedComment.r.stdout, /Could not post the explanation on PR #12: selfheal-base-main .* kept; the next check will retry/);
+    const twoF = run('2f', [...tipLists, ...holds], { CLEANUP_ONLY: '1' });
+    told(twoF, 'the consistency check is green — the server matches the deployed build, so this reconciliation is no longer needed\\.');
+    // 2g: GitHub can't say whether the base holds the merge: kept, no comment.
+    const twoG = run('2g', [...tipLists, [`compare/${m1}\\.\\.\\.${m1}`, 'HTTP 502', 1], ...holds], { CLEANUP_ONLY: '1' });
+    assert.ok(del(twoG.calls) < 0 && !twoG.calls.some((c) => /issues\/12\/comments/.test(c)), twoG.why);
+    assert.match(twoG.r.stdout, /Could not tell whether selfheal-base-main holds a merged PR's merge/);
+
+    // Run 2: the follow-up check (server unchanged, the record still D).
+    const two = run(2, [...tipLists, merged12, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1],
+      ['compare/', 'alice'], ['api user', 'bot'], ['pr create', 'https://github.test/o/r/pull/13']]);
+    const at2 = (re) => two.calls.findIndex((c) => re.test(c));
+    assert.ok(at2(/pr create -R o\/r --head selfheal-undeployed-main --base main /) >= 0, two.why);
+    assert.ok(at2(/issues\/13\/labels -f labels\[\]=self-heal\/undeployed/) >= 0, two.why);
+    assert.ok(at2(/issues\/13\/assignees -f assignees\[\]=alice/) >= 0, two.why);
+    assert.strictEqual(two.outputs['build-sha'], m1, `records m1\n${two.why}`);
+    assert.strictEqual(two.outputs['auto-merge'], 'true', two.why); // the verify job runs and records it
+    assert.strictEqual(two.outputs['undeployed-pr'], '13', two.why);
+    assert.strictEqual(two.outputs.engineers, '@alice', two.why);
+    const head = G(origin, 'rev-parse', 'selfheal-undeployed-main');
+    assert.strictEqual(head, m1, 'no conflict with u1: the engineers\' PR head is m1 itself');
+    assert.strictEqual(two.outputs['head-sha'], head);
+    assert.strictEqual(G(origin, 'merge-tree', '--write-tree', U, head).split('\n')[0].length, 40, 'merges cleanly with main');
+    assert.match(fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8'), /reviewed in #12; its merge `.{7}` is what the built repo records/);
+    assert.ok(two.calls.some((c) => /issues\/12\/comments -f body=The heal merged here .* went to the engineers in #13\. `selfheal-base-main` is deleted once that record lands\. From the \[consistency check run\]\(https:\/\/run\)\.$/.test(c)), two.why);
+    // N3: the base stays until m1 is recorded (a failed verify re-records without a new review).
+    assert.ok(del(two.calls) < 0, two.why);
+    assert.ok(create(two.calls) < 0 && !two.calls.some((c) => /pr create .*--base selfheal-base-main/.test(c)), two.why);
+
+    // Run 3: the green check after verify recorded m1: the base goes.
+    G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${m1}`);
+    const three = run(3, [...tipLists, ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=open', '0']], { CLEANUP_ONLY: '1' });
+    assert.ok(del(three.calls) >= 0 && del(three.calls) < three.calls.findIndex((c) => /pulls\?head=o:reconciliation-main&state=open/.test(c)), three.why);
+
+    // Run 4 (M9): the undeployed commits are gone (the record is main's tip): the open held PR is retargeted to
+    // main, then selfheal-base-main is deleted. Invariant 4: an unrecorded merge it holds (an earlier PR 1, #11,
+    // whose m1 the record skipped) is told first.
+    G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${U}`);
+    const four = run(4, [...tipLists, openPr1, ['git/ref/heads/selfheal-base-main', m1], ...cycle(m1, U),
+      ['pulls\\?base=selfheal-base-main&state=closed', JSON.stringify({ number: 11, head: r1, merge: m1 })]]);
+    const patch = four.calls.findIndex((c) => /PATCH repos\/o\/r\/pulls\/12 .* -f base=main$/.test(c));
+    assert.ok(patch >= 0 && del(four.calls) > patch, four.why);
+    const told4 = four.calls.findIndex((c) => new RegExp(`issues/11/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not recorded as the reviewed heal: no undeployed commits are left, so PR #12 reviews the heal into \`main\`\\. \`selfheal-base-main\` is deleted\\.`).test(c));
+    assert.ok(told4 > patch && del(four.calls) > told4, four.why);
+    assert.ok(create(four.calls) < 0, four.why);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test('ADV-I1: new eligible drift after PR 1 merged never splits past m1: the base is judged, PR 1 told why, then dropped', () => {
+  const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-i1-'));
+  try {
+    // D tracks two custom plugins; u1 is undeployed.
+    fs.writeFileSync(path.join(proj, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n!plugins/customx/\n!plugins/heldx/\n');
+    plug(proj, 'customx', '1'); plug(proj, 'heldx', '1');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site\n');
+    G(proj, 'init', '-q', '-b', 'main'); G(proj, 'add', '-A'); G(proj, 'commit', '-qm', 'D');
+    const D = G(proj, 'rev-parse', 'HEAD');
+    const origin = path.join(ws, 'origin.git');
+    G(ws, 'init', '-q', '--bare', origin);
+    G(proj, 'remote', 'add', 'origin', origin); G(proj, 'push', '-q', 'origin', 'main');
+    // Phase 1: heldx gains an external URL (held for review).
+    const server = stageServer(proj, (sv) => plug(sv, 'heldx', "'https://example.com'"));
+    const drift = () => {
+      const d = deriveDrift(proj, server);
+      fs.writeFileSync(path.join(ws, 'manifest.txt'), d.manifestText);
+      fs.writeFileSync(path.join(ws, 'diff.txt'), d.contentDiffText);
+    };
+    drift();
+    G(server, 'init', '-q'); G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${D}`);
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site, by an engineer\n');
+    G(proj, 'commit', '-qam', 'u1'); G(proj, 'push', '-q', 'origin', 'main');
+    G(proj, 'checkout', '-q', D);
+
+    const run = runner({ ws, proj, server, merge: '1' });
+
+    // Run 1: heldx is held -> PR 1 (#12) into selfheal-base-main.
+    const one = run(1, [...tipLists, ['pr create', 'https://github.test/o/r/pull/12']]);
+    assert.ok(one.calls.some((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c)), one.why);
+    const r1 = G(origin, 'rev-parse', 'reconciliation-main');
+
+    // The reviewer merges PR 1 (m1); then customx drifts on the server too (needs no review).
+    G(origin, 'branch', 'selfheal-base-main', D);
+    const tmp = path.join(ws, 'review');
+    G(ws, 'clone', '-q', '-b', 'selfheal-base-main', origin, tmp);
+    G(tmp, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', 'origin/reconciliation-main');
+    G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1 = G(origin, 'rev-parse', 'selfheal-base-main');
+    plug(server, 'customx', '2');
+    G(proj, 'checkout', '-q', '-f', D); // the drift is against D: run 1 left the checkout on its branch
+    drift();
+
+    // Run 2: no mixed split past m1. The server no longer runs the reviewed heal alone, so m1 is not taken:
+    // PR 1 says why (with the run link), the base is dropped and recreated at D, and a new PR 1 reviews both.
+    const two = run(2, [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1], ['PATCH repos/o/r/git/refs/heads/selfheal-base-main', 'not a fast forward', 1],
+      ['pulls\\?base=selfheal-base-main&state=closed', JSON.stringify({ number: 12, head: r1, merge: m1 })], ['pr create', 'https://github.test/o/r/pull/14']]);
+    const at = (re) => two.calls.findIndex((c) => re.test(c));
+    assert.doesNotMatch(two.r.stdout, /Mixed heal/, two.why);
+    assert.ok(!two.outputs['build-sha'] && !two.outputs['undeployed-pr'], two.why);
+    assert.strictEqual(two.outputs['auto-merge'], 'false', two.why);
+    assert.ok(!two.calls.some((c) => /selfheal-undeployed-main --base|force=true/.test(c)), two.why);
+    const del = at(/-X DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/);
+    const create = at(new RegExp(`POST repos/o/r/git/refs -f ref=refs/heads/selfheal-base-main -f sha=${D}`));
+    const pr = at(/pr create -R o\/r --head reconciliation-main --base selfheal-base-main /);
+    assert.ok(del >= 0 && create > del && pr > create, two.why);
+    assert.ok(at(new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; \`selfheal-base-main\` \\(at ${m1.slice(0, 7)}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`)) < del, two.why);
+    assert.ok(at(/issues\/12\/comments -f body=PR #14 is the new review of this heal\. From/) > pr, two.why);
+    const r2 = G(origin, 'rev-parse', 'reconciliation-main');
+    assert.strictEqual(G(origin, 'rev-parse', `${r2}^`), D);
+    assert.deepStrictEqual(G(origin, 'diff', '--name-only', D, r2).split('\n').sort(), ['plugins/customx/customx.php', 'plugins/heldx/heldx.php'], 'the new PR 1 reviews both');
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test('invariants 1, 2 and 5: a run whose PR targets selfheal-base-main never auto-merges, even when every item could', () => {
+  const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-crit-'));
+  try {
+    fs.writeFileSync(path.join(proj, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n!plugins/customx/\n!plugins/heldx/\n');
+    plug(proj, 'customx', '1'); plug(proj, 'heldx', '1');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site\n');
+    G(proj, 'init', '-q', '-b', 'main'); G(proj, 'add', '-A'); G(proj, 'commit', '-qm', 'D');
+    const D = G(proj, 'rev-parse', 'HEAD');
+    const origin = path.join(ws, 'origin.git');
+    G(ws, 'init', '-q', '--bare', origin);
+    G(proj, 'remote', 'add', 'origin', origin); G(proj, 'push', '-q', 'origin', 'main');
+    const server = stageServer(proj, (sv) => plug(sv, 'heldx', "'https://example.com'"));
+    const drift = () => {
+      const d = deriveDrift(proj, server);
+      fs.writeFileSync(path.join(ws, 'manifest.txt'), d.manifestText);
+      fs.writeFileSync(path.join(ws, 'diff.txt'), d.contentDiffText);
+    };
+    drift();
+    G(server, 'init', '-q'); G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${D}`);
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site, by an engineer\n');
+    G(proj, 'commit', '-qam', 'u1'); G(proj, 'push', '-q', 'origin', 'main');
+    const U = G(proj, 'rev-parse', 'HEAD');
+    G(proj, 'checkout', '-q', D);
+    const run = runner({ ws, proj, server, merge: '1' });
+
+    // Phase 1: heldx held -> PR 1 #12; the reviewer merges it (m1).
+    const one = run(1, [...tipLists, ['pr create', 'https://github.test/o/r/pull/12']]);
+    assert.ok(one.calls.some((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c)), one.why);
+    const r1 = G(origin, 'rev-parse', 'reconciliation-main');
+    G(origin, 'branch', 'selfheal-base-main', D);
+    const tmp = path.join(ws, 'review');
+    G(ws, 'clone', '-q', '-b', 'selfheal-base-main', origin, tmp);
+    G(tmp, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', 'origin/reconciliation-main');
+    G(tmp, 'push', '-q', 'origin', 'selfheal-base-main');
+    const m1 = G(origin, 'rev-parse', 'selfheal-base-main');
+    // Then the server puts heldx back to D's version and customx drifts: the remaining drift is all eligible.
+    plug(server, 'heldx', '1'); plug(server, 'customx', '2');
+    G(proj, 'checkout', '-q', '-f', D);
+    drift();
+    const held = [...tipLists, ...cycle(m1, D), ['git/ref/heads/selfheal-base-main', m1],
+      ['pulls\\?base=selfheal-base-main&state=closed', JSON.stringify({ number: 12, head: r1, merge: m1 })]];
+
+    // Run 2 (CRIT-1): m1 rejected (the server no longer runs it); a new PR 1 #14, held, nothing into main unattended.
+    const two = run(2, [...held, ['PATCH repos/o/r/git/refs/heads/selfheal-base-main', 'not a fast forward', 1], ['pr create', 'https://github.test/o/r/pull/14']]);
+    assert.ok(two.calls.some((c) => /pr create -R o\/r --head reconciliation-main --base selfheal-base-main /.test(c)), two.why);
+    assert.strictEqual(two.outputs['auto-merge'], 'false', two.why);
+    assert.strictEqual(two.outputs['build-sha'] || '', '', two.why);
+    assert.strictEqual(two.outputs.pr, '14', two.why);
+    oneRead(two);
+    const r2 = G(origin, 'rev-parse', 'reconciliation-main');
+    assert.strictEqual(two.outputs['head-sha'], r2, two.why);
+    assert.strictEqual(G(origin, 'rev-parse', `${r2}^`), D);
+    assert.strictEqual(G(origin, 'diff', '--name-only', D, r2), 'plugins/customx/customx.php');
+    assert.strictEqual(G(origin, 'rev-parse', 'main'), U, 'main untouched');
+    assert.ok(!two.calls.some((c) => /selfheal-undeployed-main --base|force=true/.test(c)), two.why);
+    const body = fs.readFileSync(path.join(ws, 'reconcile-body-main.md'), 'utf8');
+    assert.doesNotMatch(body, /Auto-merge:\*\* eligible/);
+    assert.match(body, /\*\*Auto-merge:\*\* held for a human:\n\n- `selfheal-base-main` held PR #12's merge, not accepted as the reviewed heal \(the server changed since the review: it no longer runs this heal\): it was deleted and created again at the last deployed commit, and this PR is the new review/);
+    // Invariant 5: traced on PR 1.
+    assert.ok(two.calls.some((c) => new RegExp(`issues/12/comments -f body=This merge \\(${m1.slice(0, 7)}\\) was not accepted as the reviewed heal because the server changed since the review: it no longer runs this heal\\. Nothing was recorded; \`selfheal-base-main\` \\(at ${m1.slice(0, 7)}\\) is deleted and a new PR follows to review the heal again\\. From the \\[consistency check run\\]\\(https://run\\)\\.$`).test(c)), two.why);
+
+    // Invariant 2, fail closed: GitHub can't read the base, or can't list its merged PRs: held, stopped with a
+    // warning, nothing pushed, created or deleted, never auto-merge.
+    for (const [n, rules] of [['3a', [...tipLists, ['git/ref/heads/selfheal-base-main', 'HTTP 502', 1]]],
+      ['3b', [...tipLists, ['git/ref/heads/selfheal-base-main', m1], ['pulls\\?base=selfheal-base-main&state=closed', 'HTTP 502', 1]]]]) {
+      const before = G(origin, 'rev-parse', 'reconciliation-main');
+      const three = run(n, rules);
+      assert.strictEqual(three.outputs['auto-merge'], 'false', three.why);
+      assert.ok(!three.outputs['build-sha'] && !three.outputs['undeployed-pr'], three.why);
+      assert.doesNotMatch(three.r.stdout, /Mixed heal/, three.why);
+      assert.match(three.r.stdout, /selfheal-base-main.*could not be judged this run/, three.why);
+      assert.ok(!three.calls.some((c) => /pr create|-X DELETE .*selfheal-base|git\/refs -f ref=|PATCH repos\/o\/r\/git\/refs/.test(c)), three.why);
+      assert.strictEqual(G(origin, 'rev-parse', 'reconciliation-main'), before);
+    }
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
+test('invariants 2 and 3: an earlier cycle\'s merged PR 1 under the reused base name is settled, never judged or told', () => {
+  const { dir: proj } = makeProject({ plugins: [{ slug: 'baseplug', pkg: 'saucal/baseplug', version: '1.0.0', body: '// base\n' }] });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'held-two-cycle-'));
+  try {
+    // Old cycle: PR 1 #12 merged as m_old (merge(D, r_old)), recorded, in main. Then D2 (the new cycle's base,
+    // left by PR 1 #20) and D3, deployed. u1 undeployed.
+    fs.writeFileSync(path.join(proj, '.gitignore'), 'vendor/\npkgs/\nplugins/*\n!plugins/customx/\n');
+    plug(proj, 'customx', '1');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site\n');
+    G(proj, 'init', '-q', '-b', 'main'); G(proj, 'add', '-A'); G(proj, 'commit', '-qm', 'D');
+    G(proj, 'checkout', '-q', '-b', 'old');
+    plug(proj, 'customx', "'old'"); G(proj, 'commit', '-qam', 'Reconcile server drift on main [commit only]');
+    const rOld = G(proj, 'rev-parse', 'HEAD');
+    G(proj, 'checkout', '-q', 'main'); G(proj, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12 from o/reconciliation-main', 'old');
+    const mOld = G(proj, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site v2\n'); G(proj, 'commit', '-qam', 'D2');
+    const D2 = G(proj, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site v3\n'); G(proj, 'commit', '-qam', 'D3');
+    const D3 = G(proj, 'rev-parse', 'HEAD');
+    const origin = path.join(ws, 'origin.git');
+    G(ws, 'init', '-q', '--bare', origin);
+    G(proj, 'remote', 'add', 'origin', origin); G(proj, 'push', '-q', 'origin', 'main');
+    const server = stageServer(proj, (sv) => plug(sv, 'customx', '9'));
+    const d = deriveDrift(proj, server);
+    fs.writeFileSync(path.join(ws, 'manifest.txt'), d.manifestText);
+    fs.writeFileSync(path.join(ws, 'diff.txt'), d.contentDiffText);
+    G(server, 'init', '-q'); G(server, 'commit', '-q', '--allow-empty', '-m', `Build changes from ${D3}`);
+    fs.writeFileSync(path.join(proj, 'README.md'), 'site v3, by an engineer\n');
+    G(proj, 'commit', '-qam', 'u1'); G(proj, 'push', '-q', 'origin', 'main');
+    G(proj, 'checkout', '-q', D3);
+
+    const old = (closed) => [...tipLists, [`compare/${mOld}\\.\\.\\.`, 'ahead'], ['git/ref/heads/selfheal-base-main', D2],
+      ['pulls\\?base=selfheal-base-main&state=closed', closed], ['pulls\\?base=selfheal-base-main&state=open', '1'],
+      ['pulls\\?head=o:reconciliation-main&state=open -q \\.\\[0\\]\\.number', '20'],
+      ['pulls\\?head=o:reconciliation-main&state=open -q \\.\\[0\\] //', JSON.stringify({ number: 20, body: '' })],
+      ['compare/', 'alice'], ['api user', 'bot']];
+    const merged12 = JSON.stringify({ number: 12, head: rOld, merge: mOld });
+    const quiet12 = (res) => assert.ok(!res.calls.some((c) => /issues\/12\//.test(c)), res.why);
+    const delBase = (res) => res.calls.some((c) => /-X DELETE repos\/o\/r\/git\/refs\/heads\/selfheal-base-main$/.test(c));
+
+    // Held (merge off): reviewState 'none' on the stale base at D2: fast-forwarded to D3, PR 1 #20 kept going.
+    const held = runner({ ws, proj, server, merge: '0' })('held', old(merged12));
+    quiet12(held);
+    oneRead(held);
+    assert.ok(held.calls.some((c) => new RegExp(`PATCH repos/o/r/git/refs/heads/selfheal-base-main -f sha=${D3} -F force=false`).test(c)), held.why);
+    assert.ok(held.calls.some((c) => /PATCH repos\/o\/r\/pulls\/20 .* -f base=selfheal-base-main$/.test(c)), held.why);
+    assert.ok(!delBase(held) && !held.calls.some((c) => /pr create/.test(c)), held.why);
+    assert.strictEqual(held.outputs['auto-merge'], 'false', held.why);
+
+    // All eligible (merge on), with the old merged PR 1 or none at all: not held by the stale base. The engineers'
+    // route as round 1: RM recorded, the engineers' PR, PR 1 #20 superseded, the base deleted, #12 never told.
+    const eng = runner({ ws, proj, server, merge: '1' });
+    for (const [n, closed] of [['eng', merged12], ['eng-none', '']]) {
+      const res = eng(n, [...old(closed), ['pr create', 'https://github.test/o/r/pull/21']]);
+      quiet12(res);
+      oneRead(res);
+      assert.ok(res.calls.some((c) => /pr create -R o\/r --head selfheal-undeployed-main --base main /.test(c)), res.why);
+      assert.strictEqual(res.outputs['auto-merge'], 'true', res.why);
+      assert.match(res.outputs['build-sha'] || '', /^[0-9a-f]{40}$/, res.why);
+      assert.strictEqual(G(origin, 'rev-parse', `${res.outputs['build-sha']}^1`), D3, 'RM = merge(D3, R)');
+      assert.ok(res.calls.some((c) => /issues\/20\/comments -f body=Closed by consistency self-heal: superseded/.test(c)) && delBase(res), res.why);
+    }
+
+    // Green check: PR 1 #20 closed, the base deleted, #12 not told.
+    const green = eng('green', old(merged12), { CLEANUP_ONLY: '1' });
+    quiet12(green);
+    assert.ok(green.calls.some((c) => /pulls\/20 -f state=closed/.test(c)) && delBase(green), green.why);
+
+    // main already carries the heal (a hand commit): closed as already carried, the base deleted, #12 not told.
+    G(proj, 'checkout', '-q', '-f', '-B', 'hand', 'origin/main');
+    plug(proj, 'customx', '9'); G(proj, 'commit', '-qam', 'hand fix'); G(proj, 'push', '-q', 'origin', 'hand:main');
+    G(proj, 'checkout', '-q', D3);
+    const carried = eng('carried', old(merged12));
+    quiet12(carried);
+    assert.ok(carried.calls.some((c) => /issues\/20\/comments -f body=Closed by consistency self-heal: `main` already carries/.test(c)) && delBase(carried), carried.why);
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
