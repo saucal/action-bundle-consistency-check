@@ -168,6 +168,10 @@ test('assessDiff: credentials written into code hold (key shapes, private keys, 
     "$settings['api_key'] = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
     "'client_secret' => 'Zq8Lw2Nf5Rt7Yh3Kp9Vm',",
     "$db_password = 'S3cure.Passw0rd_2024';",
+    "define('SMTP_PASSWORD', 'Tr0ub4dor&3!horse#9');", // real passwords carry symbols
+    "define( 'WPMS_SMTP_PASS', 'f3b9c2d4e5a6b7c8d9e0f1a2' );",
+    "'smtp_pass' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$pwd = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
   ]) assert.ok(holds([l]).includes('credential'), l);
   // Labels, lookups, identifiers, URLs, generated values and placeholder phrases stay clean.
   for (const l of [
@@ -177,6 +181,9 @@ test('assessDiff: credentials written into code hold (key shapes, private keys, 
     "$password = wp_generate_password(24);",
     "define('AUTH_KEY', 'put your unique phrase here');",
     "$asia = 'asiaticpopulation1234';",
+    "$password_hint = 'Use at least 8 chars 1 digit';", // spaced: the joined pass would read it as one token
+    "$passenger_ref = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "$password = \"{$prefix}_password_2fa\";",
     "$x = 1;",
   ]) assert.ok(!holds([l]).includes('credential'), l);
 });
