@@ -150,8 +150,8 @@ const DELTA_RULES = [
   })()],
 ];
 // The DELTA_RULES an adopted root is also scanned with, raw per line (so a commented or never-called
-// eval/decode still shows): the obfuscation/execution signatures, not the ordinary-plugin noise.
-const ATTACK_RULES = new Set(['eval', 'decode', 'chr-chain', 'dynamic-call', 'raw-input']);
+// eval/decode still shows): the obfuscation/execution signatures and credentials, not the ordinary-plugin noise.
+const ATTACK_RULES = new Set(['eval', 'decode', 'chr-chain', 'dynamic-call', 'raw-input', 'credential']);
 // Must-use plugins run on every request without being activated: any change there waits for a human.
 const MU_PLUGINS_RE = /(?:^|\/)(?:client-)?mu-plugins\//;
 const BACKTICK_RE = /`[^`]+`/; // PHP shell exec; JS template literals are fine

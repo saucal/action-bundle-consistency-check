@@ -235,6 +235,12 @@ test('scanText attack mode: decode/eval/chr-chain signatures as warn on PHP, raw
   assert.deepStrictEqual(scanText("const s = atob('aGk=');", 'app.js', true), [], 'PHP files only');
 });
 
+test('scanText attack mode: an adopted file carrying a key says so (credential, as warn)', () => {
+  const src = "<?php\n/* Plugin Name: Client CRM */\ndefine('CRM_STRIPE_SECRET', '" + 's' + 'k_live_' + 'a1'.repeat(12) + "');\n";
+  assert.deepStrictEqual(rules(src), [], 'default mode: not a RULES hit');
+  assert.deepStrictEqual(scanText(src, 'client-crm.php', true).map((h) => `${h.rule}@${h.line}:${h.severity}`), ['credential@3:warn']);
+});
+
 // --- server-written text must not stall the check (a stalled job never reaches its failure/Slack steps) ---
 const fastHolds = (label, add) => {
   const t = Date.now();
