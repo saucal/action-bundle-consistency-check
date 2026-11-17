@@ -8,6 +8,8 @@ const { reportBody, heldNote, undeployedNote, healCommitLine, noCommitFailure, r
 const { prState, stateMarker, readState, changeComment } = require('./lib/pr-trace');
 const { findMergedHeal, pendingOf, pendingOnMerge, lostInRunB, combineRuns } = require('./lib/merged-heal');
 const { reconcileRun } = require('./lib/reconcile-run');
+const yara = require('./lib/yara');
+const { describe } = require('./lib/suspicious');
 const { makeRunner } = require('./lib/runner');
 const { branchSame } = require('./lib/branch-same');
 const { undeployed, recorded } = require('./lib/undeployed');
@@ -341,6 +343,10 @@ async function routeTipPr(repo, num, logins) {
   };
   let isTracked = await trackedIn();
 
+  // The scanner's critical tier. Unavailable fails closed: every server-derived item is held as yara-unavailable.
+  const yaraDown = await yara.prepare({ fetch, dir: fs.mkdtempSync(path.join(env('RUNNER_TEMP', require('os').tmpdir()), 'yara-')), python: env('YARA_PYTHON', 'python3') });
+  if (yaraDown) core.warning(`Webshell scan did not run: ${yaraDown}. Every run with server-derived content is affected until the scanner is fixed; check the "Install yara-python for reconcile" step. Unscanned items are held for review as yara-unavailable.`);
+
   // 2. Classify + apply (composer add/bump + patches) via the orchestrator core.
   // SatisPress resolution goes through composer itself (`composer show`), reusing the SAME
   // auth.json action-composer-auth already configured earlier in this job — no separate
@@ -469,6 +475,12 @@ async function routeTipPr(repo, num, logins) {
   // follow the heal on the deployed commit (run B).
   const { classified, applied, verification } = tipResult || result;
   const { security, autoMerge } = combineRuns(tipResult, result);
+  const scanCauses = [...new Set(((security && security.warn) || []).filter((h) => h.rule === 'yara-unavailable')
+    .map((h) => String(h.cause || yaraDown || 'unknown scanner error').replace(/\s+/g, ' ').trim()))];
+  const scanWarning = scanCauses.length ? `Webshell scan did not run: ${scanCauses.join('; ')} — do not merge until a check with the scanner passes.` : '';
+  const scanNotice = scanWarning ? `## 🚨 ${scanWarning}\n\nServer-derived content was not fully checked for webshells. This PR updates itself after a successful check.\n\n` : '';
+  core.setOutput('webshell-scan-warning', scanWarning);
+  if (scanWarning) core.error(`${scanWarning} Every run with server-derived content is affected until the scanner is fixed; check the "Install yara-python for reconcile" step and the scanner's log.`);
   const { outcome } = result; // what gets built: run B when there are undeployed commits
   core.info(`Reconcile outcome: ${outcome} | applied: ${applied.join(', ') || '(none)'}`);
 
@@ -499,7 +511,7 @@ async function routeTipPr(repo, num, logins) {
   // One PR per ref: drift that needs review can't join the engineers' PR (merging it deploys), and no
   // second PR opens while it waits. The mixed heal's eligible part joins; the rest waits for its merge.
   if (inPlace && (!toEngineers || !staged.length)) {
-    await core.summary.addRaw(body).write();
+    await core.summary.addRaw(scanNotice + body).write();
     await refuse(`New server drift on \`${ref}\` while PR #${inPlace.number} waits ${staged.length ? 'needs a review' : 'leaves nothing to commit'}, so it can't join that PR (see the run's summary).`);
     return;
   }
@@ -513,17 +525,19 @@ async function routeTipPr(repo, num, logins) {
   // Compromise signals in server-derived content: say so first, and tell the workflow (no merge,
   // Slack ping). The PR still opens/updates so a human sees exactly what was found.
   const crit = (security && security.critical) || [];
-  const warn = (security && security.warn) || [];
+  const warn = ((security && security.warn) || []).filter((h) => h.rule !== 'yara-unavailable');
   core.setOutput('suspicious', crit.length ? 'true' : 'false');
   if (crit.length || warn.length) {
-    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${h.rule}${h.notInPr ? ' (not in this PR, still on the server)' : ''}`; // line 0: the whole file
+    const line = (h) => `- \`${h.file}${h.line ? `:${h.line}` : ''}\` — ${describe(h)}${h.notInPr ? ' (not in this PR, still on the server)' : ''}`; // line 0: the whole file
     const sec = [];
     if (crit.length) {
       sec.push('## 🚨 Security review required — not auto-merged', '',
         'Content taken from the server (with no registry version behind it) carries signals of compromised code. ' +
         'Treat this as a possible security incident: review these files on the server before merging anything.', '',
         ...crit.map(line), '');
-      core.setOutput('security-summary', [...new Set(crit.map((h) => `${h.file} (${h.rule})`))].slice(0, 10).join(', '));
+      const byFile = new Map();
+      for (const h of crit) byFile.set(h.file, new Set([...(byFile.get(h.file) || []), describe(h)]));
+      core.setOutput('security-summary', [...byFile].slice(0, 10).map(([f, d]) => `${f} (${[...d].join('; ')})`).join(', '));
       core.error(`Compromise signals in server-derived content: ${crit.length} critical finding(s). Not merging.`);
     }
     if (warn.length) sec.push('<details><summary>Reviewer notes: ' + warn.length + ' lower-severity signal(s)</summary>', '', ...warn.map(line), '', '</details>', '');
@@ -556,7 +570,7 @@ async function routeTipPr(repo, num, logins) {
   body += stateMarker(state);
 
   if (outcome === 'noop') {
-    await core.summary.addRaw('## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
+    await core.summary.addRaw(scanNotice + '## Consistency reconciliation\n\nNo actionable drift classified (all manifest entries were noise/directories).').write();
     core.warning('No actionable drift classified.');
     return;
   }
@@ -566,7 +580,7 @@ async function routeTipPr(repo, num, logins) {
     // No PR, so no PR wording (a withdrawn suspicious heal keeps its PR, and its body, below).
     const suspicious = classified.some((c) => c.category === 'suspicious');
     let recording = false;
-    await core.summary.addRaw(suspicious ? body : reportBody(classified, { ref, runUrl, already: true })).write();
+    await core.summary.addRaw(scanNotice + (suspicious ? body : reportBody(classified, { ref, runUrl, already: true }))).write();
     if (outcome === 'ignorable-only') {
       core.warning('Drift is entirely ignorable. Recommend updating SSH_IGNORE_LIST; see job summary.');
     } else {
@@ -579,7 +593,7 @@ async function routeTipPr(repo, num, logins) {
     }
     // A withdrawn (suspicious) heal also leaves nothing to commit: keep its PR as the evidence.
     if (suspicious) {
-      await updatePr(repo, ref, branch, body, runUrl); // the open PR says what was found now
+      await updatePr(repo, ref, branch, scanNotice + body, runUrl); // the open PR says what was found now
     } else {
       await closeStale(repo, branch, 'the repo already carries every change this reconciliation proposed (nothing left to commit).');
     }
@@ -659,6 +673,7 @@ async function routeTipPr(repo, num, logins) {
   core.setOutput('build-sha', buildSha);
 
   // 4. Upsert the PR via gh (GH_TOKEN is in env); the description is rewritten every run.
+  body = scanNotice + body;
   // The undeployed-tip PR supersedes an open reconciliation PR (one PR per ref).
   if (toEngineers) await closeStale(repo, branch, `superseded by the PR from \`${tipBranch}\`: the heal is recorded on its own and the undeployed commits go to their engineers.`);
   const prTitle = toEngineers ? tipTitle(ref) : `Reconcile server drift on ${ref} [commit only]`;

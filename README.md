@@ -156,6 +156,16 @@ code snippets, DB admin…). A WordPress core version that is known-vulnerable o
 whole heal (nothing merges without it). Compromise signals mark the PR **🚨 Security review required**, ping Slack
 and are never merged.
 
+Compromise signals (the critical tier) come from the webshell rules of
+[signature-base](https://github.com/Neo23x0/signature-base), run with YARA over every file reconcile takes from the server (tracked copies, adopted roots, unknown
+components) and over the text a patch adds. The rules are under the
+[Detection Rule License 1.1](https://github.com/Neo23x0/signature-base/blob/master/LICENSE): they are
+downloaded at run time from the commit pinned in `reconcile/yara/signature-base.json` and checked
+against its sha256 sums, never copied into this repo, and every message built from a match names the
+rule and its author. Any rule whose `license` is not DRL 1.1 is refused. When the rules can't run
+(yara-python, the download, a checksum or the licence check fails), the run warns with the cause and
+every item taken from the server is held as `yara-unavailable`: nothing unscanned merges.
+
 ### Commits not deployed yet
 
 When the branch is ahead of the last deployed commit D (undeployed commits ending in U), the heal R is

@@ -1,0 +1,36 @@
+{
+  "source": "https://github.com/Neo23x0/signature-base",
+  "license": "Detection Rule License 1.1 (https://github.com/Neo23x0/signature-base/blob/master/LICENSE)",
+  "repo": "Neo23x0/signature-base",
+  "commit": "de3c7252c22b3376352b5a68defa46459a12a693",
+  "files": [
+    {
+      "path": "yara/thor-webshells.yar",
+      "sha256": "930d0034a133382260349cd41070e451be6b38b0879dfd6507788434cbf2467b"
+    },
+    {
+      "path": "yara/gen_webshells.yar",
+      "sha256": "ae10ae815bb37e03ae0038062d8073cca10f0a8d667e14b88821fec5e92789cf"
+    },
+    {
+      "path": "yara/cn_pentestset_webshells.yar",
+      "sha256": "974176491d76de1eb58d23b7cd85c28e5e140c6c1f4143a6ae3e52da07927692"
+    },
+    {
+      "path": "yara/gen_cn_webshells.yar",
+      "sha256": "3660d9463a2b386acce79b8363e3b9c55e7f9d16e9a48299fc9ee4884aa4ee82"
+    },
+    {
+      "path": "yara/apt_laudanum_webshells.yar",
+      "sha256": "ab895af093afec02cb46582fc06fab320427759dbc43aeefea60499ed28d62cc"
+    },
+    {
+      "path": "yara/apt_webshell_chinachopper.yar",
+      "sha256": "22da4bfc1eeb2728a7826643ebaa86cd082af6c950752c4c962a3b9f479f909e"
+    },
+    {
+      "path": "yara/vul_php_zlib_backdoor.yar",
+      "sha256": "b3da6044dddb604c6eb1b6d516ed7c292606039f8c88f3e456aa23fa777cfe8c"
+    }
+  ]
+}
