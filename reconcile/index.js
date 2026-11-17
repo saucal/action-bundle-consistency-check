@@ -703,9 +703,10 @@ async function routeTipPr(repo, num, logins) {
     // A key in code is a live secret on a pushed branch, not a lower-severity note: say what to do about it.
     const cred = warn.filter((h) => h.rule === 'credential'), notes = warn.filter((h) => h.rule !== 'credential');
     if (cred.length) {
-      sec.push('## 🔑 A credential was written into code — not auto-merged', '',
-        "Merging puts it in the repo's history for good, and this PR's branch already carries it: rotate it, and move it out " +
-        'of code on the server (wp-config.php or the environment) before anything merges.', '', ...cred.map(line), '');
+      sec.push('## 🔑 A credential was written into code', '',
+        'Rotate it, and move it out of code on the server (wp-config.php or the environment). What this PR carries is ' +
+        "on its branch already and goes into the repo's history for good once merged. A key a vendor ships in its own " +
+        'plugin is theirs: confirm it ships that way instead.', '', ...cred.map(line), '');
     }
     if (notes.length) sec.push('<details><summary>Reviewer notes: ' + notes.length + ' lower-severity signal(s)</summary>', '', ...notes.map(line), '', '</details>', '');
     body = sec.join('\n') + '\n' + body;

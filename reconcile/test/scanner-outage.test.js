@@ -90,7 +90,7 @@ test('a key in server code gets its own section in the PR, not a lower-severity 
   const { run, outputs, body } = scenario({ content: "define('CRM_STRIPE_SECRET', '" + 's' + 'k_live_' + 'a1'.repeat(12) + "');" });
   assert.strictEqual(run.status, 0, run.stdout + run.stderr);
   assert.strictEqual(outputs['auto-merge'], 'false');
-  assert.match(body, /## 🔑 A credential was written into code — not auto-merged[\s\S]*rotate it[\s\S]*`plugins\/custom\/main\.php:2` — credential/);
+  assert.match(body, /## 🔑 A credential was written into code\n\nRotate it[\s\S]*`plugins\/custom\/main\.php:2` — credential/);
   assert.doesNotMatch(body, /lower-severity/);
   assert.doesNotMatch(body, /k_live_a1/, 'the value is never echoed');
 });
