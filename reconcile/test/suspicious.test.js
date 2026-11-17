@@ -153,6 +153,50 @@ test('assessDiff: request-data and external-url hold every spelling, callbacks f
   }
 });
 
+test('assessDiff: credentials written into code hold (key shapes, private keys, secret-named literals)', () => {
+  const holds = (add) => assessDiff(diffOf('themes/client-theme/inc/config.php', { add })).holds.map((h) => h.rule);
+  // Built at run time so the repo never holds a string a secret scanner would flag.
+  const fake = (prefix, n, ch = 'a1') => prefix + ch.repeat(n).slice(0, n);
+  for (const l of [
+    `define('STRIPE_SECRET_KEY', '${fake('s' + 'k_live_', 24)}');`,
+    `$k = '${fake('AK' + 'IA', 16, 'Q7')}';`,
+    `$t = "${fake('gh' + 'p_', 36)}";`,
+    `$s = '${fake('xo' + 'xb-', 20)}';`,
+    `$g = '${fake('AI' + 'za', 35)}';`,
+    `$pem = "-----BEGIN ${'RSA PRIVATE'} KEY-----";`,
+    "define('AWS_SECRET_ACCESS_KEY', 'wJalrXUtnFEMIK7MDENGbPxRfiCYz9q2');",
+    "$settings['api_key'] = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "'client_secret' => 'Zq8Lw2Nf5Rt7Yh3Kp9Vm',",
+    "$db_password = 'S3cure.Passw0rd_2024';",
+    "define('SMTP_PASSWORD', 'Tr0ub4dor&3!horse#9');", // real passwords carry symbols
+    "define( 'WPMS_SMTP_PASS', 'f3b9c2d4e5a6b7c8d9e0f1a2' );",
+    "'smtp_pass' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$pwd = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    `define('DB_PASSWORD', 'Tr0ub4dor${'$'}3!h{rse}:9');`, // single quotes never interpolate: '$', '{', ':' are password characters
+    "'api_passphrase' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$dbpass = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "'smtpPass' => 'f3b9c2d4e5a6b7c8d9e0f1a2',",
+    "$userPwd = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+  ]) assert.ok(holds([l]).includes('credential'), l);
+  // Labels, lookups, identifiers, URLs, generated values and placeholder phrases stay clean.
+  for (const l of [
+    "$label = __('Enter your password', 'my-plugin');",
+    "'password_field' => 'user_password_confirmation',",
+    "$api_key = get_option('myplugin_api_key');",
+    "$password = wp_generate_password(24);",
+    "define('AUTH_KEY', 'put your unique phrase here');",
+    "$asia = 'asiaticpopulation1234';",
+    "$password_hint = 'Use at least 8 chars 1 digit';", // spaced: the joined pass would read it as one token
+    "$passenger_ref = 'f3b9c2d4e5a6b7c8d9e0f1a2';",
+    "$bypass_cache = 'myplugin-cache-2024-v2';",
+    "$compass_icon = 'dashicons-compass-2x-large';",
+    "$secret_url = 'https://example.com/2024/endpoint';",
+    "$auth_token = \"token_{$user_id}_v2_suffix\";",
+    "$password = \"{$prefix}_password_2fa\";",
+    "$x = 1;",
+  ]) assert.ok(!holds([l]).includes('credential'), l);
+});
+
 test('assessDiff: deltas to build-executable files hold (scripts and package-manager config)', () => {
   const rules = (file) => assessDiff(diffOf(file, { add: ['x = 1;'] })).holds.map((h) => h.rule);
   assert.ok(rules('plugins/x/build/webpack.config.js').includes('script-file'));
@@ -198,6 +242,12 @@ test('scanText attack mode: decode/eval/chr-chain signatures as warn on PHP, raw
   assert.deepStrictEqual(hits.map((h) => `${h.rule}@${h.line}`), ['decode@2', 'eval@3', 'chr-chain@4']);
   assert.ok(hits.every((h) => h.severity === 'warn'));
   assert.deepStrictEqual(scanText("const s = atob('aGk=');", 'app.js', true), [], 'PHP files only');
+});
+
+test('scanText attack mode: an adopted file carrying a key says so (credential, as warn)', () => {
+  const src = "<?php\n/* Plugin Name: Client CRM */\ndefine('CRM_STRIPE_SECRET', '" + 's' + 'k_live_' + 'a1'.repeat(12) + "');\n";
+  assert.deepStrictEqual(rules(src), [], 'default mode: not a RULES hit');
+  assert.deepStrictEqual(scanText(src, 'client-crm.php', true).map((h) => `${h.rule}@${h.line}:${h.severity}`), ['credential@3:warn']);
 });
 
 // --- server-written text must not stall the check (a stalled job never reaches its failure/Slack steps) ---
